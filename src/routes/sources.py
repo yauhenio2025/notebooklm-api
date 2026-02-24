@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_db
 from src.schemas import SourceFromZotero, SourceResponse
 from src.services.notebook_service import get_notebook
-from src.services.source_service import delete_source, list_sources, upload_from_zotero
+from src.services.source_service import delete_source, list_sources, sync_source_ids, upload_from_zotero
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -66,6 +66,25 @@ async def api_upload_from_zotero(
     except Exception as e:
         logger.error(f"Zotero upload failed: {e}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+
+@router.post("/notebooks/{notebook_id}/sources/sync-ids")
+async def api_sync_source_ids(
+    notebook_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Sync DB source IDs with canonical NotebookLM IDs.
+
+    Use this for notebooks where sources were uploaded before the canonical ID fix.
+    """
+    notebook = await get_notebook(db, notebook_id)
+    if not notebook:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    result = await sync_source_ids(db, notebook_id)
+    if "error" in result:
+        raise HTTPException(status_code=503, detail=result["error"])
+    return result
 
 
 @router.delete("/notebooks/{notebook_id}/sources/{source_id}", status_code=204)

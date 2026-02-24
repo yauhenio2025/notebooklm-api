@@ -38,6 +38,9 @@ class SourceResponse(BaseModel):
     file_name: str | None = None
     status: str = "ready"
     uploaded_at: datetime
+    authors: str | None = None
+    publication_date: str | None = None
+    item_type: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -61,6 +64,8 @@ class CitationResponse(BaseModel):
     cited_text: str | None = None
     start_char: int | None = None
     end_char: int | None = None
+    source_authors: str | None = None
+    source_date: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -120,6 +125,9 @@ class ExportFootnote(BaseModel):
     quoted_text: str = ""
     context_snippet: str = ""
     aria_label: str = ""
+    authors: str = ""
+    date: str = ""
+    formatted_citation: str = ""
 
 
 class ExportResponse(BaseModel):

@@ -37,10 +37,27 @@ async def get_db() -> AsyncSession:
 
 
 async def init_db():
-    """Create all tables. Called during app startup."""
+    """Create all tables and run migrations. Called during app startup."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Database tables created/verified")
+
+    # Run idempotent column migrations for existing databases
+    migrations = [
+        "ALTER TABLE sources ADD COLUMN IF NOT EXISTS authors VARCHAR",
+        "ALTER TABLE sources ADD COLUMN IF NOT EXISTS publication_date VARCHAR",
+        "ALTER TABLE sources ADD COLUMN IF NOT EXISTS item_type VARCHAR",
+        "ALTER TABLE citations ADD COLUMN IF NOT EXISTS source_authors VARCHAR",
+        "ALTER TABLE citations ADD COLUMN IF NOT EXISTS source_date VARCHAR",
+    ]
+    async with engine.begin() as conn:
+        from sqlalchemy import text
+        for stmt in migrations:
+            try:
+                await conn.execute(text(stmt))
+            except Exception as e:
+                logger.debug(f"Migration skipped (may already exist): {e}")
+
+    logger.info("Database tables created/verified with migrations")
 
 
 async def close_db():

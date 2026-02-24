@@ -67,7 +67,7 @@ async def ask_question(
                 query_id=query.id,
                 citation_number=ref.citation_number,
                 source_id=ref.source_id,
-                source_title=None,  # ChatReference doesn't have source_title
+                source_title=None,  # Resolved below
                 cited_text=ref.cited_text,
                 start_char=ref.start_char,
                 end_char=ref.end_char,
@@ -75,7 +75,7 @@ async def ask_question(
             citations.append(citation)
             db.add(citation)
 
-        # Try to resolve source titles from our DB
+        # Resolve source titles and bibliographic data from our DB
         if citations:
             source_ids = {c.source_id for c in citations if c.source_id}
             if source_ids:
@@ -83,10 +83,16 @@ async def ask_question(
                 source_result = await db.execute(
                     select(Source).where(Source.id.in_(source_ids))
                 )
-                source_map = {s.id: s.title for s in source_result.scalars().all()}
+                source_map = {s.id: s for s in source_result.scalars().all()}
                 for cit in citations:
-                    if cit.source_id in source_map:
-                        cit.source_title = source_map[cit.source_id]
+                    src = source_map.get(cit.source_id)
+                    if src:
+                        cit.source_title = src.title
+                        cit.source_authors = src.authors
+                        cit.source_date = src.publication_date
+
+        # Enrich cited_text using fulltext context and resolve missing titles
+        await _enrich_citations(client, notebook_id, citations)
 
         query.metadata_ = {
             "response_type": type(result).__name__,
@@ -139,3 +145,46 @@ async def list_queries(
         .offset(offset)
     )
     return list(result.scalars().all())
+
+
+async def _enrich_citations(
+    client, notebook_id: str, citations: list[Citation], context_chars: int = 300
+):
+    """Expand short cited_text using SourceFulltext.find_citation_context().
+
+    Also resolves source_title from fulltext when DB lookup missed it.
+    Groups citations by source_id to minimize API calls (one get_fulltext per source).
+    """
+    by_source: dict[str, list[Citation]] = {}
+    for cit in citations:
+        if cit.source_id:
+            by_source.setdefault(cit.source_id, []).append(cit)
+
+    for source_id, cits in by_source.items():
+        try:
+            fulltext = await client.sources.get_fulltext(notebook_id, source_id)
+        except Exception as e:
+            logger.warning(f"Failed to get fulltext for source {source_id}: {e}")
+            continue
+
+        # Use fulltext.title as fallback for unresolved source titles
+        ft_title = getattr(fulltext, "title", None)
+        for cit in cits:
+            if not cit.source_title and ft_title:
+                cit.source_title = ft_title
+
+            # Expand short cited_text
+            if not cit.cited_text or len(cit.cited_text) >= context_chars:
+                continue
+            try:
+                matches = fulltext.find_citation_context(
+                    cit.cited_text, context_chars=context_chars
+                )
+                if matches:
+                    cit.cited_text = matches[0][0].strip()
+                    logger.debug(
+                        f"Enriched citation {cit.citation_number}: "
+                        f"{len(cit.cited_text)} chars"
+                    )
+            except Exception as e:
+                logger.debug(f"Citation enrichment failed for #{cit.citation_number}: {e}")

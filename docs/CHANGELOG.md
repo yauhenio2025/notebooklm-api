@@ -6,6 +6,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Citation enrichment: expand ~70 char cited_text to ~300 char passages using `SourceFulltext.find_citation_context()` ([src/services/query_service.py](src/services/query_service.py))
+- Canonical source ID sync: after upload, resolves NotebookLM's real source ID via `sources.list()` to fix citation→source matching ([src/services/source_service.py](src/services/source_service.py))
+- `POST /api/notebooks/{id}/sources/sync-ids` endpoint: retro-fix source IDs for existing notebooks ([src/routes/sources.py](src/routes/sources.py))
+- Bibliographic data on sources: `authors`, `publication_date`, `item_type` columns from Zotero metadata ([src/models.py](src/models.py), [src/services/source_service.py](src/services/source_service.py))
+- Bibliographic data on citations: `source_authors`, `source_date` columns copied from source during query ([src/models.py](src/models.py), [src/services/query_service.py](src/services/query_service.py))
+- Formatted citations in export: `"Deutschmann (2001), Capitalism as Religion"` style ([src/routes/export.py](src/routes/export.py))
+- Export footnotes now include `authors`, `date`, `formatted_citation` fields ([src/schemas.py](src/schemas.py))
+- Idempotent column migrations in `init_db()` for new columns ([src/database.py](src/database.py))
+
+### Fixed
+- Source IDs now match canonical NotebookLM IDs so citation→source title resolution works (was always null)
+- Temp file naming: PDFs uploaded with real filename (e.g. `deutschmann2001.pdf`) instead of `tmp*.pdf` so NotebookLM source titles are human-readable
+- Citation fulltext fallback: `source_title` resolved from `SourceFulltext.title` when DB lookup misses
+
+### Previously Added
 - `POST /api/auth/refresh` endpoint — SSHes to DigitalOcean droplet, extracts fresh Google cookies via Playwright CDP, resets in-memory NotebookLM client ([src/routes/health.py](src/routes/health.py), [src/services/auth_service.py](src/services/auth_service.py))
 - Auth service with 3 functions: `refresh_auth_from_droplet()`, `update_notebooklm_auth()`, `full_auth_refresh()` ([src/services/auth_service.py](src/services/auth_service.py))
 - Auto-retry in orchestrator: when notebook creation fails with "not available" (expired auth), automatically refreshes cookies from droplet and retries once ([src/services/orchestrator_service.py](src/services/orchestrator_service.py))

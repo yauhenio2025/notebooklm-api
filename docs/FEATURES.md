@@ -1,6 +1,6 @@
 # Feature Inventory
 
-> Auto-maintained by Claude Code. Last updated: 2026-02-24
+> Auto-maintained by Claude Code. Last updated: 2026-02-24 (citation quality fix)
 
 ## Health & Monitoring
 
@@ -52,12 +52,13 @@
 
 ### Ask Question
 - **Status**: Active
-- **Description**: Send questions to NotebookLM notebooks, extract answer + citations, persist to DB
+- **Description**: Send questions to NotebookLM notebooks, extract answer + citations with fulltext enrichment, persist to DB with bibliographic data
 - **Entry Points**:
   - `src/routes/queries.py:19-39` - POST /api/notebooks/{id}/query
-  - `src/services/query_service.py:18-112` - Query execution and citation extraction
+  - `src/services/query_service.py:24-119` - Query execution and citation extraction
+  - `src/services/query_service.py:150-190` - Citation fulltext enrichment (_enrich_citations)
 - **Dependencies**: notebooklm-py, PostgreSQL
-- **Added**: 2026-02-24
+- **Added**: 2026-02-24 | **Modified**: 2026-02-24
 
 ### Query History
 - **Status**: Active
@@ -71,10 +72,18 @@
 
 ### Source Management
 - **Status**: Active
-- **Description**: List and delete sources in notebooks
+- **Description**: List, delete, and sync sources in notebooks. Uploads use canonical ID resolution and real filenames.
 - **Entry Points**:
-  - `src/routes/sources.py:17-63` - Source endpoints
-  - `src/services/source_service.py:17-107` - Source operations
+  - `src/routes/sources.py:17-81` - Source endpoints (list, upload, sync-ids, delete)
+  - `src/services/source_service.py:19-229` - Source operations with canonical ID sync
+- **Added**: 2026-02-24 | **Modified**: 2026-02-24
+
+### Source ID Sync
+- **Status**: Active
+- **Description**: POST /api/notebooks/{id}/sources/sync-ids — retroactively fixes DB source IDs to match canonical NotebookLM IDs
+- **Entry Points**:
+  - `src/routes/sources.py:72-86` - POST sync-ids endpoint
+  - `src/services/source_service.py:152-204` - sync_source_ids() logic
 - **Added**: 2026-02-24
 
 ### Zotero Integration
@@ -102,11 +111,12 @@
 
 ### Bot.py-Compatible Export
 - **Status**: Active
-- **Description**: Export query responses in JSON format compatible with viewer.html
+- **Description**: Export query responses in JSON format compatible with viewer.html, with formatted bibliographic citations
 - **Entry Points**:
-  - `src/routes/export.py:17-71` - Export endpoint
-  - `src/routes/export.py:74-112` - HTML builder from plain text + citations
-- **Added**: 2026-02-24
+  - `src/routes/export.py:17-75` - Export endpoint with bib data
+  - `src/routes/export.py:78-105` - _format_citation() for "Author (Year), Title" format
+  - `src/routes/export.py:108-153` - HTML builder from plain text + citations
+- **Added**: 2026-02-24 | **Modified**: 2026-02-24
 
 ## Orchestrator (Natural Language Notebook Builder)
 
@@ -133,11 +143,11 @@
 
 ### Database (PostgreSQL)
 - **Status**: Active
-- **Description**: Async SQLAlchemy with asyncpg driver, 4 tables (notebooks, sources, queries, citations)
+- **Description**: Async SQLAlchemy with asyncpg driver, 4 tables with idempotent column migrations
 - **Entry Points**:
-  - `src/database.py:1-44` - Engine, session, lifecycle
-  - `src/models.py:1-104` - ORM models
-- **Added**: 2026-02-24
+  - `src/database.py:1-67` - Engine, session, lifecycle, migrations
+  - `src/models.py:1-110` - ORM models (Source has authors/publication_date/item_type, Citation has source_authors/source_date)
+- **Added**: 2026-02-24 | **Modified**: 2026-02-24
 
 ### NotebookLM Client
 - **Status**: Active

@@ -1,6 +1,8 @@
 """Source upload orchestration (Zotero -> NotebookLM)."""
 
 import logging
+import os
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,9 +48,22 @@ async def upload_file_source(
 
     logger.info(f"Source {src_result.id} uploaded and ready")
 
-    # Persist to DB
+    # Sync canonical ID: NotebookLM may assign a different ID than the upload returned
+    canonical_id = src_result.id
+    try:
+        nlm_sources = await client.sources.list(notebook_id)
+        for nlm_src in nlm_sources:
+            nlm_title = getattr(nlm_src, "title", None) or ""
+            if nlm_title and file_name and nlm_title.lower() == file_name.lower():
+                canonical_id = nlm_src.id
+                logger.info(f"Canonical ID resolved: {src_result.id} -> {canonical_id}")
+                break
+    except Exception as e:
+        logger.warning(f"Failed to sync canonical source ID: {e}")
+
+    # Persist to DB with canonical ID
     source = Source(
-        id=src_result.id,
+        id=canonical_id,
         notebook_id=notebook_id,
         title=title or src_result.title or file_name,
         source_type=str(src_result.kind) if hasattr(src_result, "kind") else "pdf",
@@ -76,6 +91,7 @@ async def upload_from_zotero(
     uploaded = []
 
     for key in item_keys:
+        tmp_dir = None
         try:
             logger.info(f"Processing Zotero item: {key}")
 
@@ -99,10 +115,10 @@ async def upload_from_zotero(
                 logger.info(f"Source already uploaded for Zotero key {key}, skipping")
                 continue
 
-            # Download PDF
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                tmp_path = tmp.name
-                await download_pdf(key, tmp_path)
+            # Download PDF using real filename so NotebookLM sees it
+            tmp_dir = tempfile.mkdtemp(prefix="zotero_")
+            tmp_path = os.path.join(tmp_dir, pdf_filename)
+            await download_pdf(key, tmp_path)
 
             # Upload to NotebookLM
             try:
@@ -114,14 +130,78 @@ async def upload_from_zotero(
                     title=title,
                     zotero_key=key,
                 )
+                # Store Zotero bibliographic data on the source
+                source.authors = ", ".join(item.get("creators", []))
+                source.publication_date = item.get("date", "")
+                source.item_type = item.get("item_type", "")
+                await db.commit()
+
                 uploaded.append(source)
             finally:
-                Path(tmp_path).unlink(missing_ok=True)
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                tmp_dir = None
 
         except Exception as e:
             logger.error(f"Failed to upload Zotero item {key}: {e}")
+            if tmp_dir:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return uploaded
+
+
+async def sync_source_ids(db: AsyncSession, notebook_id: str) -> dict:
+    """Sync DB source IDs with canonical NotebookLM IDs for an existing notebook.
+
+    Useful for notebooks where sources were uploaded before the canonical ID fix.
+    Matches by title/filename and updates the DB record's primary key.
+    """
+    client = await get_notebooklm_client()
+    if not client:
+        return {"error": "NotebookLM client not available"}
+
+    nlm_sources = await client.sources.list(notebook_id)
+    db_sources = await list_sources(db, notebook_id)
+
+    updated = []
+    for db_src in db_sources:
+        for nlm_src in nlm_sources:
+            nlm_title = getattr(nlm_src, "title", None) or ""
+            match = False
+            # Match by filename
+            if db_src.file_name and nlm_title.lower() == db_src.file_name.lower():
+                match = True
+            # Match by title
+            elif db_src.title and nlm_title.lower() == db_src.title.lower():
+                match = True
+
+            if match and nlm_src.id != db_src.id:
+                old_id = db_src.id
+                # Delete old record and insert with new ID (PK change)
+                await db.delete(db_src)
+                await db.flush()
+                new_source = Source(
+                    id=nlm_src.id,
+                    notebook_id=db_src.notebook_id,
+                    title=db_src.title,
+                    source_type=db_src.source_type,
+                    zotero_key=db_src.zotero_key,
+                    file_name=db_src.file_name,
+                    status=db_src.status,
+                    uploaded_at=db_src.uploaded_at,
+                    authors=db_src.authors,
+                    publication_date=db_src.publication_date,
+                    item_type=db_src.item_type,
+                    metadata_=db_src.metadata_,
+                )
+                db.add(new_source)
+                updated.append({"old_id": old_id, "new_id": nlm_src.id, "title": db_src.title})
+                logger.info(f"Synced source ID: {old_id} -> {nlm_src.id} ({db_src.title})")
+                break
+
+    if updated:
+        await db.commit()
+
+    return {"synced": len(updated), "details": updated}
 
 
 async def delete_source(db: AsyncSession, notebook_id: str, source_id: str) -> bool:

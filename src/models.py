@@ -52,6 +52,9 @@ class Source(Base):
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
+    authors: Mapped[str | None] = mapped_column(String, nullable=True)
+    publication_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    item_type: Mapped[str | None] = mapped_column(String, nullable=True)
     metadata_: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
 
     # Relationships
@@ -99,6 +102,8 @@ class Citation(Base):
     cited_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     start_char: Mapped[int | None] = mapped_column(Integer, nullable=True)
     end_char: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_authors: Mapped[str | None] = mapped_column(String, nullable=True)
+    source_date: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # Relationships
     query: Mapped["Query"] = relationship(back_populates="citations")

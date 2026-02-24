@@ -32,16 +32,26 @@ async def api_export_query(
     if not query or query.notebook_id != notebook_id:
         raise HTTPException(status_code=404, detail="Query not found")
 
-    # Build footnotes in viewer.html format
+    # Build footnotes in viewer.html format with bibliographic data
     footnotes = []
     for cit in sorted(query.citations, key=lambda c: c.citation_number):
+        authors = getattr(cit, "source_authors", None) or ""
+        date = getattr(cit, "source_date", None) or ""
+        source_title = cit.source_title or ""
+
+        # Build formatted citation like "Ihde (2009), Postphenomenology and Technoscience"
+        formatted = _format_citation(authors, date, source_title)
+
         footnotes.append(
             ExportFootnote(
                 number=cit.citation_number,
-                source_file=cit.source_title or "",
+                source_file=source_title,
                 quoted_text=cit.cited_text or "",
                 context_snippet="",
-                aria_label=f"{cit.citation_number}: {cit.source_title or ''}",
+                aria_label=f"{cit.citation_number}: {formatted or source_title}",
+                authors=authors,
+                date=date,
+                formatted_citation=formatted,
             )
         )
 
@@ -63,6 +73,36 @@ async def api_export_query(
         notebook_sources=sorted(notebook_sources),
         model="notebooklm",
     )
+
+
+def _format_citation(authors: str, date: str, title: str) -> str:
+    """Format a bibliographic citation like 'Ihde (2009), Postphenomenology and Technoscience'."""
+    # Extract last name of first author
+    short_name = ""
+    if authors:
+        first_author = authors.split(",")[0].strip()
+        name_parts = first_author.split()
+        short_name = name_parts[-1] if name_parts else first_author
+
+    # Extract year
+    year = ""
+    if date:
+        y = date.strip()[:4]
+        if y.isdigit():
+            year = y
+
+    # Build: "Author (Year), Title" or subsets
+    prefix = ""
+    if short_name and year:
+        prefix = f"{short_name} ({year})"
+    elif short_name:
+        prefix = short_name
+    elif year:
+        prefix = f"({year})"
+
+    if prefix and title:
+        return f"{prefix}, {title}"
+    return prefix or title or ""
 
 
 def _build_clean_html(answer: str, footnotes: list[ExportFootnote]) -> str:
