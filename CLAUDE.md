@@ -11,6 +11,7 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 - FastAPI + Uvicorn
 - SQLAlchemy 2.0 (async) + asyncpg + PostgreSQL (Render)
 - notebooklm-py (Google batchexecute protocol)
+- anthropic (Claude API for natural language orchestration)
 - httpx (Zotero API client)
 - Pydantic v2
 
@@ -28,6 +29,8 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 - Singleton NotebookLM client initialized lazily from NOTEBOOKLM_AUTH_JSON env var
 - PostgreSQL stores notebooks, sources, queries, and citations for history/export
 - Zotero integration fetches PDFs and uploads them to NotebookLM notebooks
+- Natural language orchestrator: Claude Haiku parses instructions → resolves Zotero collections → creates notebooks → uploads PDFs
+- Zotero library: 362 collections, max depth 5, paginated fetching across 4 pages
 
 ## Documentation
 - Feature inventory: `docs/FEATURES.md`
@@ -38,6 +41,7 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 - `NOTEBOOKLM_AUTH_JSON` - JSON string of Google auth cookies from notebooklm-py login
 - `ZOTERO_API_KEY` - Zotero API key for group library access
 - `ZOTERO_GROUP_ID` - Zotero group library ID (default: 5579237)
+- `ANTHROPIC_API_KEY` - Anthropic API key for Claude-powered intent parsing in /api/build-notebook
 
 ## Render Deployment
 - Service: `notebooklm-api` (Starter plan, Singapore)

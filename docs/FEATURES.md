@@ -97,6 +97,27 @@
   - `src/routes/export.py:74-112` - HTML builder from plain text + citations
 - **Added**: 2026-02-24
 
+## Orchestrator (Natural Language Notebook Builder)
+
+### Build Notebook from Instruction
+- **Status**: Active
+- **Description**: Accept natural language like "Make a notebook from the O'Neill papers in jan" — uses Claude Haiku to resolve Zotero collection, creates NotebookLM notebook, uploads all PDFs
+- **Entry Points**:
+  - `src/routes/orchestrator.py:18-50` - POST /api/build-notebook endpoint
+  - `src/services/orchestrator_service.py:31-100` - LLM intent parsing with Claude
+  - `src/services/orchestrator_service.py:103-203` - Full pipeline (tree → parse → items → create → upload)
+- **Dependencies**: anthropic, httpx, notebooklm-py, PostgreSQL
+- **Added**: 2026-02-24
+
+### Collection Tree Browser
+- **Status**: Active
+- **Description**: Returns full Zotero collection hierarchy (362 collections) with paths, depth, children
+- **Entry Points**:
+  - `src/routes/orchestrator.py:53-67` - GET /api/zotero/tree endpoint
+  - `src/services/zotero_service.py:53-87` - Tree building with paginated fetch
+- **Dependencies**: httpx, Zotero API
+- **Added**: 2026-02-24
+
 ## Infrastructure
 
 ### Database (PostgreSQL)

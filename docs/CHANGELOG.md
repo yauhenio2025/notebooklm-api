@@ -31,3 +31,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Live at https://notebooklm-api-40ns.onrender.com (Starter plan, Singapore)
 - Database: Render PostgreSQL with 4 tables (notebooks, sources, queries, citations)
 - Verified: /health, /status, /api/zotero/collections all working
+
+## [2026-02-24] Natural Language Notebook Builder
+
+### Added
+- `POST /api/build-notebook` — LLM-powered natural language notebook creation ([src/routes/orchestrator.py](src/routes/orchestrator.py))
+- `GET /api/zotero/tree` — full 362-collection hierarchy with paths and depth ([src/routes/orchestrator.py](src/routes/orchestrator.py))
+- Orchestrator service using Claude Haiku for intent parsing ([src/services/orchestrator_service.py](src/services/orchestrator_service.py))
+- Paginated Zotero collection fetching — handles 362+ collections across 4 pages ([src/services/zotero_service.py](src/services/zotero_service.py))
+- `list_collection_items_with_pdfs()` for accurate PDF detection ([src/services/zotero_service.py](src/services/zotero_service.py))
+- `anthropic` dependency for Claude API calls ([requirements.txt](requirements.txt))
+- `ANTHROPIC_API_KEY` env var support ([src/config.py](src/config.py))
+
+### Fixed
+- `sources/from-zotero` collection_key path now passes all items to upload pipeline instead of filtering on always-false `has_pdf` flag ([src/routes/sources.py](src/routes/sources.py))
