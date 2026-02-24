@@ -8,3 +8,4 @@ asyncpg>=0.30.0
 notebooklm-py>=0.3.0
 python-multipart>=0.0.6
 alembic>=1.13.0
+anthropic>=0.40.0

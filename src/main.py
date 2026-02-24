@@ -57,6 +57,7 @@ from src.routes.sources import router as sources_router
 from src.routes.zotero import router as zotero_router
 from src.routes.batch import router as batch_router
 from src.routes.export import router as export_router
+from src.routes.orchestrator import router as orchestrator_router
 
 app.include_router(health_router, tags=["Health"])
 app.include_router(notebooks_router, prefix="/api", tags=["Notebooks"])
@@ -65,3 +66,4 @@ app.include_router(sources_router, prefix="/api", tags=["Sources"])
 app.include_router(zotero_router, prefix="/api", tags=["Zotero"])
 app.include_router(batch_router, prefix="/api", tags=["Batch"])
 app.include_router(export_router, prefix="/api", tags=["Export"])
+app.include_router(orchestrator_router, prefix="/api", tags=["Orchestrator"])

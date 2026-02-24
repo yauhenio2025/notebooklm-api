@@ -162,6 +162,17 @@ class ZoteroCollection(BaseModel):
     num_items: int = 0
 
 
+class ZoteroCollectionTree(BaseModel):
+    """Collection with full hierarchical path info."""
+    key: str
+    name: str
+    parent_key: str | None = None
+    num_items: int = 0
+    full_path: str = ""
+    depth: int = 1
+    children_keys: list[str] = []
+
+
 class ZoteroItem(BaseModel):
     key: str
     title: str
@@ -170,3 +181,63 @@ class ZoteroItem(BaseModel):
     date: str = ""
     has_pdf: bool = False
     pdf_filename: str | None = None
+
+
+# --- Orchestrator (Natural Language Notebook Builder) ---
+
+class BuildNotebookRequest(BaseModel):
+    instruction: str = Field(
+        ...,
+        min_length=1,
+        max_length=2000,
+        description="Natural language instruction for building a notebook",
+        json_schema_extra={
+            "examples": [
+                "Make a notebook from the O'Neill papers in jan",
+                "Create a notebook with Castoriadis primary sources",
+                "Build a notebook from _2026_jan / deutschmann",
+            ]
+        },
+    )
+
+
+class BuildNotebookSourceInfo(BaseModel):
+    title: str
+    file_name: str | None = None
+    status: str = "ready"
+    zotero_key: str | None = None
+
+
+class BuildNotebookIntent(BaseModel):
+    collection_key: str | None = None
+    collection_path: str | None = None
+    notebook_title: str | None = None
+    confidence: float = 0.0
+    reasoning: str | None = None
+    alternatives: list[dict] = []
+
+
+class BuildNotebookStep(BaseModel):
+    step: str
+    duration_s: float = 0.0
+    collections_found: int | None = None
+    intent: BuildNotebookIntent | None = None
+    total_items: int | None = None
+    items_with_pdfs: int | None = None
+    notebook_id: str | None = None
+    notebook_title: str | None = None
+    attempted: int | None = None
+    uploaded: int | None = None
+
+
+class BuildNotebookResponse(BaseModel):
+    status: str
+    notebook_id: str | None = None
+    notebook_title: str | None = None
+    collection_path: str | None = None
+    collection_key: str | None = None
+    sources_uploaded: int = 0
+    sources: list[BuildNotebookSourceInfo] = []
+    intent: BuildNotebookIntent | None = None
+    duration_s: float = 0.0
+    steps: list[dict] = []

@@ -45,11 +45,14 @@ async def api_upload_from_zotero(
     item_keys = body.item_keys or []
 
     # If collection_key provided, get all items from that collection
+    # Note: we pass ALL item keys, not just those with has_pdf=True,
+    # because list_collection_items doesn't check children for PDFs.
+    # upload_from_zotero handles skipping items without PDFs gracefully.
     if body.collection_key and not item_keys:
         from src.services.zotero_service import list_collection_items
 
         items = await list_collection_items(body.collection_key)
-        item_keys = [item["key"] for item in items if item.get("has_pdf")]
+        item_keys = [item["key"] for item in items]
 
     if not item_keys:
         raise HTTPException(

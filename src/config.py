@@ -32,6 +32,12 @@ class Settings(BaseSettings):
         description="Zotero group library ID",
     )
 
+    # Anthropic (for natural language orchestration)
+    anthropic_api_key: str = Field(
+        default="",
+        description="Anthropic API key for Claude-powered intent parsing",
+    )
+
     # App
     debug: bool = Field(default=False)
     log_level: str = Field(default="INFO")
