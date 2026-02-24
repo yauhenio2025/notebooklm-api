@@ -32,31 +32,39 @@ async def api_export_query(
     if not query or query.notebook_id != notebook_id:
         raise HTTPException(status_code=404, detail="Query not found")
 
-    # Build footnotes in viewer.html format with bibliographic data
-    footnotes = []
+    # Build full footnote lookup by citation number
+    all_footnotes: dict[int, ExportFootnote] = {}
     for cit in sorted(query.citations, key=lambda c: c.citation_number):
+        # Keep first (or best) footnote per citation number
+        if cit.citation_number in all_footnotes:
+            continue
         authors = getattr(cit, "source_authors", None) or ""
         date = getattr(cit, "source_date", None) or ""
         source_title = cit.source_title or ""
-
-        # Build formatted citation like "Ihde (2009), Postphenomenology and Technoscience"
         formatted = _format_citation(authors, date, source_title)
 
-        footnotes.append(
-            ExportFootnote(
-                number=cit.citation_number,
-                source_file=source_title,
-                quoted_text=cit.cited_text or "",
-                context_snippet="",
-                aria_label=f"{cit.citation_number}: {formatted or source_title}",
-                authors=authors,
-                date=date,
-                formatted_citation=formatted,
-            )
+        all_footnotes[cit.citation_number] = ExportFootnote(
+            number=cit.citation_number,
+            source_file=source_title,
+            quoted_text=cit.cited_text or "",
+            context_snippet="",
+            aria_label=f"{cit.citation_number}: {formatted or source_title}",
+            authors=authors,
+            date=date,
+            formatted_citation=formatted,
         )
 
+    # Find which citation numbers are actually referenced in the answer text
+    answer_text = query.answer or ""
+    referenced_nums = _extract_referenced_citation_numbers(answer_text)
+
+    # Filter footnotes to only those referenced in the text
+    footnotes = [
+        all_footnotes[n] for n in sorted(referenced_nums) if n in all_footnotes
+    ]
+
     # Build clean_html from answer text + citation markers
-    clean_html = _build_clean_html(query.answer or "", footnotes)
+    clean_html = _build_clean_html(answer_text, all_footnotes)
 
     # Build notebook_sources from unique source titles
     notebook_sources = list(
@@ -67,7 +75,7 @@ async def api_export_query(
         timestamp=query.asked_at.isoformat() if query.asked_at else "",
         notebook_url="",
         question=query.question,
-        response_text=query.answer or "",
+        response_text=answer_text,
         clean_html=clean_html,
         footnotes=[f.model_dump() for f in footnotes],
         notebook_sources=sorted(notebook_sources),
@@ -105,19 +113,89 @@ def _format_citation(authors: str, date: str, title: str) -> str:
     return prefix or title or ""
 
 
-def _build_clean_html(answer: str, footnotes: list[ExportFootnote]) -> str:
-    """Convert plain text answer + footnotes into HTML with citation markers.
+def _extract_referenced_citation_numbers(text: str) -> set[int]:
+    """Extract all citation numbers referenced in the answer text.
 
-    The notebooklm-py answer text typically contains inline citation references
-    like [1], [2] etc. We convert these to <sup> tags matching the viewer.html format.
+    Handles: [1], [1, 2], [4-6], [1, 3-5], [12-14]
+    """
+    nums = set()
+    # Match all bracket groups: [anything with digits, commas, hyphens]
+    for bracket_match in re.finditer(r"\[(\d[\d,\s\-]*)\]", text):
+        inner = bracket_match.group(1)
+        for part in inner.split(","):
+            part = part.strip()
+            range_match = re.match(r"(\d+)\s*-\s*(\d+)", part)
+            if range_match:
+                lo, hi = int(range_match.group(1)), int(range_match.group(2))
+                nums.update(range(lo, hi + 1))
+            elif part.isdigit():
+                nums.add(int(part))
+    return nums
+
+
+def _make_sup(num: int, source_map: dict[int, str]) -> str:
+    """Build a single <sup> citation tag."""
+    source = source_map.get(num, "")
+    return (
+        f'<sup class="citation" data-num="{num}" '
+        f'data-source="{_html_esc(source)}" '
+        f'title="{num}: {_html_esc(source)}">{num}</sup>'
+    )
+
+
+def _html_esc(s: str) -> str:
+    """Escape HTML special characters in attribute values."""
+    return s.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _replace_citations(text: str, source_map: dict[int, str]) -> str:
+    """Replace all citation bracket patterns with <sup> tags.
+
+    Handles [1], [1, 2], [4-6], [1, 3-5, 8] etc.
+    """
+    def _replace_bracket(match):
+        inner = match.group(1)
+        sups = []
+        for part in inner.split(","):
+            part = part.strip()
+            range_match = re.match(r"(\d+)\s*-\s*(\d+)", part)
+            if range_match:
+                lo, hi = int(range_match.group(1)), int(range_match.group(2))
+                sups.append(", ".join(_make_sup(n, source_map) for n in range(lo, hi + 1)))
+            elif part.isdigit():
+                sups.append(_make_sup(int(part), source_map))
+            else:
+                sups.append(part)
+        return ", ".join(sups)
+
+    return re.sub(r"\[(\d[\d,\s\-]*)\]", _replace_bracket, text)
+
+
+def _apply_markdown(text: str) -> str:
+    """Convert basic markdown formatting to HTML.
+
+    Handles **bold**, *italic*, and bold-italic combinations.
+    """
+    # Bold-italic ***text*** or ___text___
+    text = re.sub(r"\*\*\*(.+?)\*\*\*", r"<strong><em>\1</em></strong>", text)
+    # Bold **text**
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    # Italic *text* (but not inside HTML tags)
+    text = re.sub(r"(?<![<\w])\*([^*]+?)\*(?![>\w])", r"<em>\1</em>", text)
+    return text
+
+
+def _build_clean_html(answer: str, footnote_map: dict[int, ExportFootnote]) -> str:
+    """Convert plain text answer into HTML with citation markers and formatting.
+
+    Handles citation patterns: [1], [1, 2], [4-6], [1, 3-5, 8]
+    Handles markdown: **bold**, *italic*
     """
     if not answer:
         return ""
 
-    # Build source lookup
-    source_map = {fn.number: fn.source_file for fn in footnotes}
+    source_map = {num: fn.source_file for num, fn in footnote_map.items()}
 
-    # Split into paragraphs
     paragraphs = answer.split("\n\n")
     html_parts = []
 
@@ -126,26 +204,25 @@ def _build_clean_html(answer: str, footnotes: list[ExportFootnote]) -> str:
         if not para:
             continue
 
-        # Replace citation references [N] with <sup> tags
-        def replace_citation(match):
-            num = int(match.group(1))
-            source = source_map.get(num, "")
-            return (
-                f'<sup class="citation" data-num="{num}" '
-                f'data-source="{source}" '
-                f'title="{num}: {source}">{num}</sup>'
-            )
-
-        para_html = re.sub(r"\[(\d+)\]", replace_citation, para)
+        # Apply markdown formatting first, then citation replacement
+        para_html = _apply_markdown(para)
+        para_html = _replace_citations(para_html, source_map)
 
         # Detect headings (short bold-like lines ending with colon)
-        if len(para) < 80 and para.endswith(":"):
+        if len(para) < 100 and para.rstrip().endswith(":"):
             html_parts.append(f"<h3>{para_html}</h3>")
         elif para.startswith("- ") or para.startswith("* "):
             items = re.split(r"\n[-*]\s", para)
-            items[0] = items[0].lstrip("- *")
-            li_items = "".join(f"<li>{item.strip()}</li>\n" for item in items if item.strip())
-            html_parts.append(f"<ul>\n{li_items}</ul>")
+            items[0] = re.sub(r"^[-*]\s*", "", items[0])
+            li_html = []
+            for item in items:
+                item = item.strip()
+                if not item:
+                    continue
+                item_html = _apply_markdown(item)
+                item_html = _replace_citations(item_html, source_map)
+                li_html.append(f"<li>{item_html}</li>\n")
+            html_parts.append(f"<ul>\n{''.join(li_html)}</ul>")
         else:
             html_parts.append(f"<p>{para_html}</p>")
 
