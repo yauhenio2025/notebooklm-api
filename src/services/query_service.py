@@ -1,4 +1,12 @@
-"""Query execution and citation extraction service."""
+"""Query execution and citation extraction service.
+
+Uses client.chat.ask() which returns AskResult with:
+- .answer (str): The AI-generated answer text
+- .conversation_id (str): UUID for this conversation
+- .turn_number (int): Position in conversation
+- .references (list[ChatReference]): Citation data with:
+  - .source_id, .citation_number, .cited_text, .start_char, .end_char
+"""
 
 import logging
 from datetime import datetime, timezone
@@ -19,14 +27,8 @@ async def ask_question(
     question: str,
     conversation_id: str | None = None,
 ) -> Query:
-    """Ask a question to a NotebookLM notebook and persist the response.
-
-    1. Creates a pending query record
-    2. Sends the question via notebooklm-py
-    3. Extracts answer + citations from the response
-    4. Persists everything to DB
-    """
-    client = get_notebooklm_client()
+    """Ask a question to a NotebookLM notebook and persist the response."""
+    client = await get_notebooklm_client()
     if not client:
         raise RuntimeError("NotebookLM client not available - check auth configuration")
 
@@ -44,65 +46,60 @@ async def ask_question(
     logger.info(f"Query {query.id}: asking '{question[:80]}...'")
 
     try:
-        # Send question to NotebookLM
-        result = client.notebooks.ask(notebook_id, question)
+        # Send question via client.chat.ask() (the correct API path)
+        result = await client.chat.ask(
+            notebook_id,
+            question,
+            conversation_id=conversation_id,
+        )
 
-        # Extract answer text
-        answer_text = ""
-        if hasattr(result, "text"):
-            answer_text = result.text
-        elif hasattr(result, "answer"):
-            answer_text = result.answer
-        elif isinstance(result, str):
-            answer_text = result
-        else:
-            answer_text = str(result)
-
-        query.answer = answer_text
+        # Extract answer - AskResult has .answer attribute
+        query.answer = result.answer
+        query.conversation_id = result.conversation_id
+        query.turn_number = result.turn_number
         query.status = "completed"
         query.answered_at = datetime.now(timezone.utc)
 
-        # Extract citations
+        # Extract citations from .references (list of ChatReference)
         citations = []
-        if hasattr(result, "references") and result.references:
-            for i, ref in enumerate(result.references, 1):
-                citation = Citation(
-                    query_id=query.id,
-                    citation_number=i,
-                    source_id=getattr(ref, "source_id", None),
-                    source_title=getattr(ref, "source_title", None) or getattr(ref, "title", None),
-                    cited_text=getattr(ref, "cited_text", None) or getattr(ref, "text", None),
-                    start_char=getattr(ref, "start_index", None),
-                    end_char=getattr(ref, "end_index", None),
-                )
-                citations.append(citation)
-                db.add(citation)
-        elif hasattr(result, "citations") and result.citations:
-            for i, cit in enumerate(result.citations, 1):
-                citation = Citation(
-                    query_id=query.id,
-                    citation_number=i,
-                    source_id=getattr(cit, "source_id", None),
-                    source_title=getattr(cit, "source_title", None) or getattr(cit, "title", None),
-                    cited_text=getattr(cit, "cited_text", None) or getattr(cit, "text", None),
-                    start_char=getattr(cit, "start_index", None),
-                    end_char=getattr(cit, "end_index", None),
-                )
-                citations.append(citation)
-                db.add(citation)
+        for ref in result.references:
+            citation = Citation(
+                query_id=query.id,
+                citation_number=ref.citation_number,
+                source_id=ref.source_id,
+                source_title=None,  # ChatReference doesn't have source_title
+                cited_text=ref.cited_text,
+                start_char=ref.start_char,
+                end_char=ref.end_char,
+            )
+            citations.append(citation)
+            db.add(citation)
 
-        # Store raw response metadata
+        # Try to resolve source titles from our DB
+        if citations:
+            source_ids = {c.source_id for c in citations if c.source_id}
+            if source_ids:
+                from src.models import Source
+                source_result = await db.execute(
+                    select(Source).where(Source.id.in_(source_ids))
+                )
+                source_map = {s.id: s.title for s in source_result.scalars().all()}
+                for cit in citations:
+                    if cit.source_id in source_map:
+                        cit.source_title = source_map[cit.source_id]
+
         query.metadata_ = {
             "response_type": type(result).__name__,
             "citation_count": len(citations),
-            "answer_length": len(answer_text),
+            "answer_length": len(result.answer),
+            "is_follow_up": result.is_follow_up,
         }
 
         await db.commit()
         await db.refresh(query)
 
         logger.info(
-            f"Query {query.id}: completed - {len(answer_text)} chars, "
+            f"Query {query.id}: completed - {len(result.answer)} chars, "
             f"{len(citations)} citations"
         )
 

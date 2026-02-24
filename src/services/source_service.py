@@ -32,40 +32,29 @@ async def upload_file_source(
     title: str | None = None,
     zotero_key: str | None = None,
 ) -> Source:
-    """Upload a local file as a source to a NotebookLM notebook.
-
-    Steps:
-    1. Upload via notebooklm-py client
-    2. Wait for processing to complete
-    3. Persist source record to DB
-    """
-    client = get_notebooklm_client()
+    """Upload a local file as a source to a NotebookLM notebook."""
+    client = await get_notebooklm_client()
     if not client:
         raise RuntimeError("NotebookLM client not available")
 
     logger.info(f"Uploading source to notebook {notebook_id}: {file_name}")
 
-    # Upload to NotebookLM
-    src_result = client.sources.add_file(notebook_id, file_path)
-    source_id = getattr(src_result, "id", None) or str(src_result)
+    # Upload to NotebookLM (async) with wait=True to poll for readiness
+    src_result = await client.sources.add_file(
+        notebook_id, file_path, wait=True, wait_timeout=120.0
+    )
 
-    # Wait for processing
-    try:
-        if hasattr(src_result, "wait_until_ready"):
-            src_result.wait_until_ready(timeout=120)
-            logger.info(f"Source {source_id} processed successfully")
-    except Exception as e:
-        logger.warning(f"Source processing wait failed (may still succeed): {e}")
+    logger.info(f"Source {src_result.id} uploaded and ready")
 
     # Persist to DB
     source = Source(
-        id=source_id,
+        id=src_result.id,
         notebook_id=notebook_id,
-        title=title or file_name,
-        source_type="pdf",
+        title=title or src_result.title or file_name,
+        source_type=str(src_result.kind) if hasattr(src_result, "kind") else "pdf",
         zotero_key=zotero_key,
         file_name=file_name,
-        status="ready",
+        status="ready" if src_result.is_ready else "processing",
         uploaded_at=datetime.now(timezone.utc),
     )
     db.add(source)
@@ -81,16 +70,8 @@ async def upload_from_zotero(
     notebook_id: str,
     item_keys: list[str],
 ) -> list[Source]:
-    """Download PDFs from Zotero and upload them to a NotebookLM notebook.
-
-    Pipeline for each item:
-    1. Fetch item metadata from Zotero API
-    2. Download PDF to temp file
-    3. Upload to NotebookLM
-    4. Record mapping in DB
-    5. Clean up temp file
-    """
-    from src.services.zotero_service import get_item_details, download_pdf
+    """Download PDFs from Zotero and upload them to a NotebookLM notebook."""
+    from src.services.zotero_service import download_pdf, get_item_details
 
     uploaded = []
 
@@ -135,7 +116,6 @@ async def upload_from_zotero(
                 )
                 uploaded.append(source)
             finally:
-                # Clean up temp file
                 Path(tmp_path).unlink(missing_ok=True)
 
         except Exception as e:
@@ -156,10 +136,10 @@ async def delete_source(db: AsyncSession, notebook_id: str, source_id: str) -> b
     if not source:
         return False
 
-    client = get_notebooklm_client()
+    client = await get_notebooklm_client()
     if client:
         try:
-            client.sources.delete(notebook_id, source_id)
+            await client.sources.delete(notebook_id, source_id)
         except Exception as e:
             logger.warning(f"Failed to delete source from NotebookLM: {e}")
 

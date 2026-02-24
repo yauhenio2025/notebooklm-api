@@ -28,6 +28,8 @@ async def lifespan(app: FastAPI):
     logger.info("Database initialized")
     yield
     logger.info("Shutting down NotebookLM API...")
+    from src.notebooklm_client import close_client
+    await close_client()
     await close_db()
 
 

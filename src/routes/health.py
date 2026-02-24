@@ -73,9 +73,9 @@ async def status(
         try:
             from src.notebooklm_client import get_notebooklm_client
 
-            client = get_notebooklm_client()
+            client = await get_notebooklm_client()
             if client:
-                notebooks = client.notebooks.list()
+                notebooks = await client.notebooks.list()
                 result.notebooklm_notebooks = len(notebooks)
                 result.notebooklm_auth = "active"
         except Exception as e:

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from src.database import get_db
-from src.models import Query
+from src.models import Citation, Query
 from src.schemas import (
     BatchQueryRequest,
     BatchQueryResponse,
@@ -19,7 +19,6 @@ from src.schemas import (
     QueryListItem,
 )
 from src.services.notebook_service import get_notebook
-from src.services.query_service import ask_question
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -119,8 +118,13 @@ async def api_batch_status(
 
 
 async def _process_batch(batch_id: str, notebook_id: str, delay_seconds: float):
-    """Background task: process each question in the batch sequentially."""
+    """Background task: process each pending query in the batch sequentially.
+
+    Updates existing Query records (created by the endpoint) rather than
+    creating new ones, to avoid duplicates.
+    """
     from src.database import async_session
+    from src.notebooklm_client import get_notebooklm_client
 
     logger.info(f"Batch {batch_id}: starting background processing")
 
@@ -132,10 +136,55 @@ async def _process_batch(batch_id: str, notebook_id: str, delay_seconds: float):
         )
         queries = list(result.scalars().all())
 
+        client = await get_notebooklm_client()
+        if not client:
+            logger.error(f"Batch {batch_id}: NotebookLM client not available")
+            for q in queries:
+                q.status = "failed"
+                q.metadata_ = {"error": "NotebookLM client not available"}
+            await db.commit()
+            return
+
+        conversation_id = None  # Use same conversation for the batch
+
         for i, query in enumerate(queries):
             try:
                 logger.info(f"Batch {batch_id}: processing question {i + 1}/{len(queries)}")
-                await ask_question(db, notebook_id, query.question)
+
+                ask_result = await client.chat.ask(
+                    notebook_id,
+                    query.question,
+                    conversation_id=conversation_id,
+                )
+
+                query.answer = ask_result.answer
+                query.conversation_id = ask_result.conversation_id
+                query.turn_number = ask_result.turn_number
+                query.status = "completed"
+                query.answered_at = datetime.now(timezone.utc)
+
+                # Use the conversation_id for follow-up questions
+                conversation_id = ask_result.conversation_id
+
+                # Extract citations
+                for ref in ask_result.references:
+                    citation = Citation(
+                        query_id=query.id,
+                        citation_number=ref.citation_number,
+                        source_id=ref.source_id,
+                        cited_text=ref.cited_text,
+                        start_char=ref.start_char,
+                        end_char=ref.end_char,
+                    )
+                    db.add(citation)
+
+                query.metadata_ = {
+                    "citation_count": len(ask_result.references),
+                    "answer_length": len(ask_result.answer),
+                    "batch_position": i + 1,
+                }
+
+                await db.commit()
 
                 if i < len(queries) - 1:
                     await asyncio.sleep(delay_seconds)

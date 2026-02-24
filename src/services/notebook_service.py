@@ -3,11 +3,11 @@
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.models import Notebook, Source, Query
+from src.models import Notebook, Query, Source
 from src.notebooklm_client import get_notebooklm_client
 
 logger = logging.getLogger(__name__)
@@ -33,12 +33,12 @@ async def get_notebook(db: AsyncSession, notebook_id: str) -> Notebook | None:
 
 async def create_notebook(db: AsyncSession, title: str) -> Notebook:
     """Create a new notebook via NotebookLM and persist to DB."""
-    client = get_notebooklm_client()
+    client = await get_notebooklm_client()
     if not client:
         raise RuntimeError("NotebookLM client not available - check auth configuration")
 
     logger.info(f"Creating notebook: {title}")
-    nb = client.notebooks.create(title=title)
+    nb = await client.notebooks.create(title=title)
 
     notebook = Notebook(
         id=nb.id,
@@ -61,10 +61,10 @@ async def delete_notebook(db: AsyncSession, notebook_id: str) -> bool:
     if not notebook:
         return False
 
-    client = get_notebooklm_client()
+    client = await get_notebooklm_client()
     if client:
         try:
-            client.notebooks.delete(notebook_id)
+            await client.notebooks.delete(notebook_id)
             logger.info(f"Deleted notebook from NotebookLM: {notebook_id}")
         except Exception as e:
             logger.warning(f"Failed to delete from NotebookLM (may already be gone): {e}")
@@ -76,20 +76,15 @@ async def delete_notebook(db: AsyncSession, notebook_id: str) -> bool:
 
 
 async def sync_notebook(db: AsyncSession, notebook_id: str) -> Notebook:
-    """Sync notebook state from NotebookLM to database.
-
-    Fetches current notebook metadata and source list from NotebookLM,
-    updates the local DB record, and reconciles sources.
-    """
-    client = get_notebooklm_client()
+    """Sync notebook state from NotebookLM to database."""
+    client = await get_notebooklm_client()
     if not client:
         raise RuntimeError("NotebookLM client not available")
 
     logger.info(f"Syncing notebook: {notebook_id}")
 
-    # Get current state from NotebookLM
-    nb = client.notebooks.get(notebook_id)
-    sources_list = client.sources.list(notebook_id)
+    nb = await client.notebooks.get(notebook_id)
+    sources_list = await client.sources.list(notebook_id)
 
     # Upsert notebook
     notebook = await get_notebook(db, notebook_id)
@@ -111,14 +106,13 @@ async def sync_notebook(db: AsyncSession, notebook_id: str) -> Notebook:
         existing_source_ids = {s.id for s in notebook.sources}
 
     for src_item in sources_list:
-        src_id = src_item.id if hasattr(src_item, "id") else str(src_item)
-        if src_id not in existing_source_ids:
+        if src_item.id not in existing_source_ids:
             source = Source(
-                id=src_id,
+                id=src_item.id,
                 notebook_id=notebook_id,
-                title=getattr(src_item, "title", src_id),
-                source_type=getattr(src_item, "type", "unknown"),
-                status="ready",
+                title=src_item.title or src_item.id,
+                source_type=str(src_item.kind) if hasattr(src_item, "kind") else "unknown",
+                status="ready" if src_item.is_ready else "processing",
             )
             db.add(source)
 
