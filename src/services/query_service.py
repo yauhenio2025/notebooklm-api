@@ -6,8 +6,12 @@ Uses client.chat.ask() which returns AskResult with:
 - .turn_number (int): Position in conversation
 - .references (list[ChatReference]): Citation data with:
   - .source_id, .citation_number, .cited_text, .start_char, .end_char
+
+Includes auto-retry with auth refresh for transient failures (stale sessions,
+RPC errors, timeouts).
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -20,17 +24,41 @@ from src.notebooklm_client import get_notebooklm_client
 
 logger = logging.getLogger(__name__)
 
+# Error patterns that indicate auth/session staleness (retryable)
+_RETRYABLE_PATTERNS = [
+    "not available",
+    "no result found for rpc",
+    "chat request timed out",
+    "session",
+    "unauthorized",
+    "unauthenticated",
+]
+
+
+def _is_retryable(error: Exception) -> bool:
+    """Check if an error is likely caused by stale auth/session."""
+    msg = str(error).lower()
+    return any(pat in msg for pat in _RETRYABLE_PATTERNS)
+
 
 async def ask_question(
     db: AsyncSession,
     notebook_id: str,
     question: str,
     conversation_id: str | None = None,
+    max_retries: int = 2,
 ) -> Query:
-    """Ask a question to a NotebookLM notebook and persist the response."""
+    """Ask a question to a NotebookLM notebook and persist the response.
+
+    Automatically retries with auth refresh on transient failures (stale sessions,
+    RPC errors, timeouts). Up to max_retries attempts.
+    """
     client = await get_notebooklm_client()
     if not client:
-        raise RuntimeError("NotebookLM client not available - check auth configuration")
+        # Try auth refresh before giving up
+        client = await _refresh_and_get_client()
+        if not client:
+            raise RuntimeError("NotebookLM client not available - check auth configuration")
 
     # Create pending query
     query = Query(
@@ -45,13 +73,33 @@ async def ask_question(
     await db.refresh(query)
     logger.info(f"Query {query.id}: asking '{question[:80]}...'")
 
+    # Attempt with retries on transient failures
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            result = await client.chat.ask(
+                notebook_id,
+                question,
+                conversation_id=conversation_id,
+            )
+            break  # Success
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries and _is_retryable(e):
+                logger.warning(
+                    f"Query {query.id}: attempt {attempt} failed with retryable error: {e}. "
+                    f"Refreshing auth and retrying in 3s..."
+                )
+                client = await _refresh_and_get_client()
+                if not client:
+                    raise RuntimeError(f"Auth refresh failed during query retry: {e}") from e
+                await asyncio.sleep(3)
+            else:
+                raise
+    else:
+        raise last_error  # All retries exhausted
+
     try:
-        # Send question via client.chat.ask() (the correct API path)
-        result = await client.chat.ask(
-            notebook_id,
-            question,
-            conversation_id=conversation_id,
-        )
 
         # Extract answer - AskResult has .answer attribute
         query.answer = result.answer
@@ -188,3 +236,23 @@ async def _enrich_citations(
                     )
             except Exception as e:
                 logger.debug(f"Citation enrichment failed for #{cit.citation_number}: {e}")
+
+
+async def _refresh_and_get_client():
+    """Refresh auth from droplet and return a fresh NotebookLM client.
+
+    Returns None if refresh fails.
+    """
+    try:
+        from src.services.auth_service import full_auth_refresh
+        refresh_result = await full_auth_refresh()
+        logger.info(
+            f"Auth auto-refresh succeeded "
+            f"({refresh_result['extraction']['cookie_count']} cookies, "
+            f"{refresh_result['total_duration_s']}s)"
+        )
+        client = await get_notebooklm_client()
+        return client
+    except Exception as e:
+        logger.error(f"Auth auto-refresh failed: {e}")
+        return None

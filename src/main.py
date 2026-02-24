@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -19,6 +20,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Background auth keepalive interval (seconds)
+AUTH_KEEPALIVE_INTERVAL = 20 * 60  # 20 minutes
+
+
+async def _auth_keepalive_loop():
+    """Periodically refresh NotebookLM auth cookies to prevent session staleness.
+
+    Runs every AUTH_KEEPALIVE_INTERVAL seconds. If refresh fails, logs warning
+    and retries on next cycle — doesn't crash the server.
+    """
+    await asyncio.sleep(30)  # Let startup finish before first check
+    while True:
+        try:
+            await asyncio.sleep(AUTH_KEEPALIVE_INTERVAL)
+            logger.info("[auth-keepalive] Refreshing cookies proactively...")
+            from src.services.auth_service import full_auth_refresh
+            result = await full_auth_refresh()
+            logger.info(
+                f"[auth-keepalive] Success: {result['extraction']['cookie_count']} cookies "
+                f"in {result['total_duration_s']}s"
+            )
+        except asyncio.CancelledError:
+            logger.info("[auth-keepalive] Shutting down")
+            break
+        except Exception as e:
+            logger.warning(f"[auth-keepalive] Refresh failed (will retry next cycle): {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,8 +54,19 @@ async def lifespan(app: FastAPI):
     logger.info("Starting NotebookLM API...")
     await init_db()
     logger.info("Database initialized")
+
+    # Start background auth keepalive
+    keepalive_task = asyncio.create_task(_auth_keepalive_loop())
+    logger.info(f"Auth keepalive started (every {AUTH_KEEPALIVE_INTERVAL // 60} min)")
+
     yield
+
     logger.info("Shutting down NotebookLM API...")
+    keepalive_task.cancel()
+    try:
+        await keepalive_task
+    except asyncio.CancelledError:
+        pass
     from src.notebooklm_client import close_client
     await close_client()
     await close_db()

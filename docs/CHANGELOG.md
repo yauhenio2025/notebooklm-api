@@ -6,6 +6,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Background auth keepalive: proactively refreshes NotebookLM cookies every 20 min to prevent session staleness ([src/main.py](src/main.py))
+- Auto-retry on queries: detects stale auth/RPC/timeout errors, refreshes cookies, retries once — no manual intervention needed ([src/services/query_service.py](src/services/query_service.py))
+- Export: handles citation ranges `[4-6]`, lists `[1,2]`, markdown `**bold**`/`*italic*`, and filters footnotes to only those referenced in answer text ([src/routes/export.py](src/routes/export.py))
 - Citation enrichment: expand ~70 char cited_text to ~300 char passages using `SourceFulltext.find_citation_context()` ([src/services/query_service.py](src/services/query_service.py))
 - Canonical source ID sync: after upload, resolves NotebookLM's real source ID via `sources.list()` to fix citation→source matching ([src/services/source_service.py](src/services/source_service.py))
 - `POST /api/notebooks/{id}/sources/sync-ids` endpoint: retro-fix source IDs for existing notebooks ([src/routes/sources.py](src/routes/sources.py))
