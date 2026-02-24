@@ -134,6 +134,22 @@ class ExportResponse(BaseModel):
     model: str = "notebooklm"
 
 
+# --- Auth Refresh ---
+
+class AuthRefreshExtraction(BaseModel):
+    cookie_count: int = 0
+    origin_count: int = 0
+    ssh_duration_s: float = 0.0
+
+
+class AuthRefreshResponse(BaseModel):
+    status: str
+    extraction: AuthRefreshExtraction | None = None
+    client_reset: bool = False
+    total_duration_s: float = 0.0
+    error: str | None = None
+
+
 # --- Health ---
 
 class HealthResponse(BaseModel):

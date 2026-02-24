@@ -38,6 +38,16 @@ class Settings(BaseSettings):
         description="Anthropic API key for Claude-powered intent parsing",
     )
 
+    # DigitalOcean droplet for auth refresh
+    droplet_host: str = Field(
+        default="207.154.192.181",
+        description="DigitalOcean droplet IP running Chrome with NotebookLM session",
+    )
+    droplet_ssh_key: str = Field(
+        default="",
+        description="SSH private key for root@droplet (PEM format, as string)",
+    )
+
     # App
     debug: bool = Field(default=False)
     log_level: str = Field(default="INFO")

@@ -6,6 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- `POST /api/auth/refresh` endpoint — SSHes to DigitalOcean droplet, extracts fresh Google cookies via Playwright CDP, resets in-memory NotebookLM client ([src/routes/health.py](src/routes/health.py), [src/services/auth_service.py](src/services/auth_service.py))
+- Auth service with 3 functions: `refresh_auth_from_droplet()`, `update_notebooklm_auth()`, `full_auth_refresh()` ([src/services/auth_service.py](src/services/auth_service.py))
+- Auto-retry in orchestrator: when notebook creation fails with "not available" (expired auth), automatically refreshes cookies from droplet and retries once ([src/services/orchestrator_service.py](src/services/orchestrator_service.py))
+- `AuthRefreshResponse` and `AuthRefreshExtraction` Pydantic schemas ([src/schemas.py](src/schemas.py))
+- `asyncssh` dependency for SSH to droplet ([requirements.txt](requirements.txt))
+- Config: `DROPLET_HOST` and `DROPLET_SSH_KEY` environment variables ([src/config.py](src/config.py))
+
+### Previously Added
 - Project scaffolding: FastAPI app with async SQLAlchemy + PostgreSQL ([src/main.py](src/main.py), [src/database.py](src/database.py))
 - Configuration from environment variables with pydantic-settings ([src/config.py](src/config.py))
 - Database models: notebooks, sources, queries, citations ([src/models.py](src/models.py))

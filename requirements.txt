@@ -9,3 +9,4 @@ notebooklm-py>=0.3.0
 python-multipart>=0.0.6
 alembic>=1.13.0
 anthropic>=0.40.0
+asyncssh>=2.17.0

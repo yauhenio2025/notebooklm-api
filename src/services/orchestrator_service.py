@@ -197,13 +197,61 @@ async def build_notebook_from_instruction(instruction: str, db) -> dict:
             "steps": steps,
         }
 
-    # Step 4: Create NotebookLM notebook
+    # Step 4: Create NotebookLM notebook (with auto-retry on auth failure)
     step_start = time.time()
     notebook_title = intent.get("notebook_title", "Untitled Notebook")
     logger.info(f"[build-notebook] Step 4: Creating notebook '{notebook_title}'")
 
     try:
         notebook = await create_notebook(db, notebook_title)
+    except RuntimeError as e:
+        if "not available" in str(e).lower():
+            # Auth likely expired — attempt auto-refresh
+            logger.warning(
+                f"[build-notebook] Notebook creation failed with auth error: {e}. "
+                "Attempting auto-refresh from droplet..."
+            )
+            try:
+                from src.services.auth_service import full_auth_refresh
+
+                refresh_result = await full_auth_refresh()
+                logger.info(
+                    f"[build-notebook] Auth auto-refresh succeeded "
+                    f"({refresh_result['extraction']['cookie_count']} cookies, "
+                    f"{refresh_result['total_duration_s']}s)"
+                )
+                steps.append({
+                    "step": "auth_auto_refresh",
+                    "duration_s": refresh_result["total_duration_s"],
+                    "cookie_count": refresh_result["extraction"]["cookie_count"],
+                })
+
+                # Retry notebook creation once
+                logger.info(f"[build-notebook] Retrying notebook creation after auth refresh")
+                notebook = await create_notebook(db, notebook_title)
+
+            except Exception as refresh_err:
+                logger.error(
+                    f"[build-notebook] Auth auto-refresh failed: {refresh_err}"
+                )
+                return {
+                    "status": "failed",
+                    "error": (
+                        f"Notebook creation failed (auth expired), "
+                        f"and auto-refresh also failed: {refresh_err}"
+                    ),
+                    "original_error": str(e),
+                    "intent": intent,
+                    "steps": steps,
+                }
+        else:
+            logger.error(f"[build-notebook] Notebook creation failed: {e}")
+            return {
+                "status": "failed",
+                "error": f"Failed to create notebook: {e}",
+                "intent": intent,
+                "steps": steps,
+            }
     except Exception as e:
         logger.error(f"[build-notebook] Notebook creation failed: {e}")
         return {

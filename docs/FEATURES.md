@@ -15,7 +15,18 @@
 - **Status**: Active
 - **Description**: Detailed status including DB tables, NotebookLM client state, Zotero config
 - **Entry Points**:
-  - `src/routes/health.py:40` - GET /status endpoint
+  - `src/routes/health.py:43` - GET /status endpoint
+- **Added**: 2026-02-24
+
+### Auth Refresh
+- **Status**: Active
+- **Description**: POST /api/auth/refresh — SSHes to DigitalOcean droplet, extracts fresh Google cookies via Playwright CDP, resets NotebookLM client singleton
+- **Entry Points**:
+  - `src/routes/health.py:94-121` - POST /api/auth/refresh endpoint
+  - `src/services/auth_service.py:37-120` - SSH + cookie extraction from droplet
+  - `src/services/auth_service.py:123-175` - Client reset with fresh cookies
+  - `src/services/auth_service.py:178-205` - Full end-to-end refresh orchestration
+- **Dependencies**: asyncssh, Playwright CDP on droplet
 - **Added**: 2026-02-24
 
 ## Notebooks
@@ -101,13 +112,13 @@
 
 ### Build Notebook from Instruction
 - **Status**: Active
-- **Description**: Accept natural language like "Make a notebook from the O'Neill papers in jan" — uses Claude Haiku to resolve Zotero collection, creates NotebookLM notebook, uploads all PDFs
+- **Description**: Accept natural language like "Make a notebook from the O'Neill papers in jan" — uses Claude Haiku to resolve Zotero collection, creates NotebookLM notebook, uploads all PDFs. Auto-retries with auth refresh if cookies are expired.
 - **Entry Points**:
   - `src/routes/orchestrator.py:18-50` - POST /api/build-notebook endpoint
-  - `src/services/orchestrator_service.py:31-100` - LLM intent parsing with Claude
-  - `src/services/orchestrator_service.py:103-203` - Full pipeline (tree → parse → items → create → upload)
-- **Dependencies**: anthropic, httpx, notebooklm-py, PostgreSQL
-- **Added**: 2026-02-24
+  - `src/services/orchestrator_service.py:22-108` - LLM intent parsing with Claude
+  - `src/services/orchestrator_service.py:111-312` - Full pipeline with auto-retry on auth failure
+- **Dependencies**: anthropic, httpx, notebooklm-py, asyncssh, PostgreSQL
+- **Added**: 2026-02-24 | **Modified**: 2026-02-24
 
 ### Collection Tree Browser
 - **Status**: Active

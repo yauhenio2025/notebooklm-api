@@ -42,6 +42,8 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 - `ZOTERO_API_KEY` - Zotero API key for group library access
 - `ZOTERO_GROUP_ID` - Zotero group library ID (default: 5579237)
 - `ANTHROPIC_API_KEY` - Anthropic API key for Claude-powered intent parsing in /api/build-notebook
+- `DROPLET_HOST` - DigitalOcean droplet IP for auth refresh (default: 207.154.192.181)
+- `DROPLET_SSH_KEY` - SSH private key (PEM format) for root@droplet, used by POST /api/auth/refresh
 
 ## Render Deployment
 - Service: `notebooklm-api` (Starter plan, Singapore)
