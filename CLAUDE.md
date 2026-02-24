@@ -17,7 +17,10 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 ## Quick Reference
 - Run locally: `./start`
 - Run production: `uvicorn src.main:app --host 0.0.0.0 --port $PORT`
-- Test: `curl http://localhost:8000/health`
+- Test locally: `curl http://localhost:8000/health`
+- Production URL: `https://notebooklm-api-40ns.onrender.com`
+- Render service ID: `srv-d6emdnogjchc7384omh0`
+- API docs: `https://notebooklm-api-40ns.onrender.com/docs`
 
 ## Architecture Notes
 - notebooklm-py handles all Google NotebookLM communication (no browser needed at runtime)
@@ -35,6 +38,21 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 - `NOTEBOOKLM_AUTH_JSON` - JSON string of Google auth cookies from notebooklm-py login
 - `ZOTERO_API_KEY` - Zotero API key for group library access
 - `ZOTERO_GROUP_ID` - Zotero group library ID (default: 5579237)
+
+## Render Deployment
+- Service: `notebooklm-api` (Starter plan, Singapore)
+- Database: `notebook-lm-db` (Render PostgreSQL, Starter, Singapore)
+- DB internal URL: `postgresql://notebook_lm_db_user:...@dpg-d6ekteruibrs73df6au0-a/notebook_lm_db`
+- Auto-deploy: enabled on `master` branch push
+
+## notebooklm-py API Notes
+- All methods are async coroutines (must await)
+- Client: `await NotebookLMClient.from_storage(path)` — async context manager
+- Queries: `await client.chat.ask(notebook_id, question)` — returns `AskResult`
+- AskResult: `.answer` (str), `.references` (list[ChatReference]), `.conversation_id`, `.turn_number`
+- ChatReference: `.source_id`, `.citation_number`, `.cited_text`, `.start_char`, `.end_char`
+- Sources: `await client.sources.add_file(notebook_id, path, wait=True)`
+- Source: `.id`, `.title`, `.kind` (SourceType enum), `.is_ready`
 
 ## Code Conventions
 - Async everywhere (async def endpoints, async SQLAlchemy sessions)

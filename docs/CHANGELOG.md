@@ -20,3 +20,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - NotebookLM client singleton wrapper ([src/notebooklm_client.py](src/notebooklm_client.py))
 - Zotero API client for collections and PDF download ([src/services/zotero_service.py](src/services/zotero_service.py))
 - Render deployment configuration ([render.yaml](render.yaml))
+
+### Fixed
+- All service methods now properly async (await all notebooklm-py calls)
+- Corrected API path: `client.chat.ask()` not `client.notebooks.ask()`
+- Batch processing updates existing Query records instead of creating duplicates
+- NotebookLM client lifecycle uses async context manager properly
+
+### Deployed
+- Live at https://notebooklm-api-40ns.onrender.com (Starter plan, Singapore)
+- Database: Render PostgreSQL with 4 tables (notebooks, sources, queries, citations)
+- Verified: /health, /status, /api/zotero/collections all working
