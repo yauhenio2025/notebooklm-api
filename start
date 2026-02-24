@@ -1,0 +1,13 @@
+#!/bin/bash
+# NotebookLM API - local development server
+export FLASK_DEBUG=true
+
+# Default port
+PORT=${PORT:-8000}
+
+echo "Starting NotebookLM API on port $PORT..."
+echo "Health check: http://localhost:$PORT/health"
+echo "API docs: http://localhost:$PORT/docs"
+echo ""
+
+uvicorn src.main:app --host 0.0.0.0 --port "$PORT" --reload
