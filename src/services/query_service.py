@@ -202,6 +202,10 @@ async def _enrich_citations(
 
     Also resolves source_title from fulltext when DB lookup missed it.
     Groups citations by source_id to minimize API calls (one get_fulltext per source).
+
+    For citations with NULL cited_text (parser failed to extract text from streaming
+    response), attempts to recover text using start_char/end_char as approximate
+    positions in the source fulltext.
     """
     by_source: dict[str, list[Citation]] = {}
     for cit in citations:
@@ -215,14 +219,29 @@ async def _enrich_citations(
             logger.warning(f"Failed to get fulltext for source {source_id}: {e}")
             continue
 
-        # Use fulltext.title as fallback for unresolved source titles
+        ft_content = getattr(fulltext, "content", None) or ""
         ft_title = getattr(fulltext, "title", None)
+
         for cit in cits:
             if not cit.source_title and ft_title:
                 cit.source_title = ft_title
 
-            # Expand short cited_text
-            if not cit.cited_text or len(cit.cited_text) >= context_chars:
+            # Case 1: NULL cited_text — try to recover from fulltext using char positions
+            if not cit.cited_text:
+                if cit.start_char is not None and ft_content:
+                    recovered = _recover_cited_text(
+                        ft_content, cit.start_char, cit.end_char, context_chars
+                    )
+                    if recovered:
+                        cit.cited_text = recovered
+                        logger.info(
+                            f"Recovered NULL citation #{cit.citation_number} "
+                            f"from fulltext: {len(recovered)} chars"
+                        )
+                continue
+
+            # Case 2: short cited_text — expand using substring search
+            if len(cit.cited_text) >= context_chars:
                 continue
             try:
                 matches = fulltext.find_citation_context(
@@ -236,6 +255,42 @@ async def _enrich_citations(
                     )
             except Exception as e:
                 logger.debug(f"Citation enrichment failed for #{cit.citation_number}: {e}")
+
+
+def _recover_cited_text(
+    content: str, start_char: int, end_char: int | None, context_chars: int = 300
+) -> str | None:
+    """Try to recover cited text from fulltext using char positions.
+
+    NotebookLM's start_char/end_char reference the internal chunked index, not
+    direct fulltext positions, so this is a best-effort heuristic. We try the
+    position directly and also search nearby for sentence boundaries.
+    """
+    content_len = len(content)
+    if start_char >= content_len:
+        return None
+
+    # Try direct extraction with context window around start_char
+    # The char positions often approximate the actual location
+    window_start = max(0, start_char - context_chars // 2)
+    window_end = min(content_len, start_char + context_chars)
+
+    snippet = content[window_start:window_end].strip()
+    if not snippet or len(snippet) < 20:
+        return None
+
+    # Trim to sentence boundaries if possible
+    # Find first sentence start (capital after period/newline)
+    first_period = snippet.find(". ")
+    if first_period > 0 and first_period < len(snippet) // 3:
+        snippet = snippet[first_period + 2:]
+
+    # Find last sentence end
+    last_period = snippet.rfind(".")
+    if last_period > len(snippet) * 2 // 3:
+        snippet = snippet[: last_period + 1]
+
+    return snippet.strip() if len(snippet.strip()) >= 20 else None
 
 
 async def _refresh_and_get_client():
