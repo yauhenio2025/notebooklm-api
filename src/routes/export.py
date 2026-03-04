@@ -30,9 +30,9 @@ async def api_export_query(
 
     Handles streaming duplication: the notebooklm-py library accumulates
     citations from ALL streaming chunks, causing massive duplication (e.g.
-    24 unique citations → 712 records). We deduplicate by (source_id,
-    cited_text) and renumber 1-N in order of first appearance, which
-    matches the [1]-[N] markers in the answer text.
+    24 unique citations → 712 records). We deduplicate by citation_number
+    (the original NotebookLM reference number), preserving the mapping
+    between [N] markers in the answer text and the actual source passages.
     """
     query = await get_query(db, query_id)
     if not query or query.notebook_id != notebook_id:
@@ -40,16 +40,15 @@ async def api_export_query(
 
     answer_text = query.answer or ""
 
-    # Deduplicate citations: streaming causes 10-50x duplication per unique citation.
-    # Group by (source_id, cited_text), keep earliest by id (= insertion order =
-    # first appearance in streaming response, which matches answer text order).
-    seen_keys: set[tuple[str | None, str | None]] = set()
+    # Deduplicate citations: streaming causes 10-50x duplication per citation number.
+    # Group by citation_number (the original NotebookLM reference), keep earliest by id.
+    # This preserves the mapping between [N] markers in answer text and the actual source.
+    seen_numbers: set[int] = set()
     unique_citations = []
     for cit in sorted(query.citations, key=lambda c: c.id):
-        key = (cit.source_id, cit.cited_text)
-        if key in seen_keys:
+        if cit.citation_number in seen_numbers:
             continue
-        seen_keys.add(key)
+        seen_numbers.add(cit.citation_number)
         unique_citations.append(cit)
 
     raw_count = len(query.citations)
@@ -59,20 +58,21 @@ async def api_export_query(
             f"Export query {query_id}: deduplicated {raw_count} → {deduped_count} citations"
         )
 
-    # Build footnotes with correct 1-N numbering (matching answer text markers)
+    # Build footnotes keyed by ORIGINAL citation_number (matching [N] markers in answer text)
     all_footnotes: dict[int, ExportFootnote] = {}
-    for idx, cit in enumerate(unique_citations, start=1):
+    for cit in unique_citations:
+        num = cit.citation_number
         authors = getattr(cit, "source_authors", None) or ""
         date = getattr(cit, "source_date", None) or ""
         source_title = cit.source_title or ""
         formatted = _format_citation(authors, date, source_title)
 
-        all_footnotes[idx] = ExportFootnote(
-            number=idx,
+        all_footnotes[num] = ExportFootnote(
+            number=num,
             source_file=source_title,
             quoted_text=cit.cited_text or "",
             context_snippet="",
-            aria_label=f"{idx}: {formatted or source_title}",
+            aria_label=f"{num}: {formatted or source_title}",
             authors=authors,
             date=date,
             formatted_citation=formatted,
