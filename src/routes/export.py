@@ -27,35 +27,58 @@ async def api_export_query(
 
     This format is compatible with the existing viewer.html for rendering
     NotebookLM responses with citations.
+
+    Handles streaming duplication: the notebooklm-py library accumulates
+    citations from ALL streaming chunks, causing massive duplication (e.g.
+    24 unique citations → 712 records). We deduplicate by (source_id,
+    cited_text) and renumber 1-N in order of first appearance, which
+    matches the [1]-[N] markers in the answer text.
     """
     query = await get_query(db, query_id)
     if not query or query.notebook_id != notebook_id:
         raise HTTPException(status_code=404, detail="Query not found")
 
-    # Build full footnote lookup by citation number
-    all_footnotes: dict[int, ExportFootnote] = {}
-    for cit in sorted(query.citations, key=lambda c: c.citation_number):
-        # Keep first (or best) footnote per citation number
-        if cit.citation_number in all_footnotes:
+    answer_text = query.answer or ""
+
+    # Deduplicate citations: streaming causes 10-50x duplication per unique citation.
+    # Group by (source_id, cited_text), keep earliest by id (= insertion order =
+    # first appearance in streaming response, which matches answer text order).
+    seen_keys: set[tuple[str | None, str | None]] = set()
+    unique_citations = []
+    for cit in sorted(query.citations, key=lambda c: c.id):
+        key = (cit.source_id, cit.cited_text)
+        if key in seen_keys:
             continue
+        seen_keys.add(key)
+        unique_citations.append(cit)
+
+    raw_count = len(query.citations)
+    deduped_count = len(unique_citations)
+    if raw_count != deduped_count:
+        logger.info(
+            f"Export query {query_id}: deduplicated {raw_count} → {deduped_count} citations"
+        )
+
+    # Build footnotes with correct 1-N numbering (matching answer text markers)
+    all_footnotes: dict[int, ExportFootnote] = {}
+    for idx, cit in enumerate(unique_citations, start=1):
         authors = getattr(cit, "source_authors", None) or ""
         date = getattr(cit, "source_date", None) or ""
         source_title = cit.source_title or ""
         formatted = _format_citation(authors, date, source_title)
 
-        all_footnotes[cit.citation_number] = ExportFootnote(
-            number=cit.citation_number,
+        all_footnotes[idx] = ExportFootnote(
+            number=idx,
             source_file=source_title,
             quoted_text=cit.cited_text or "",
             context_snippet="",
-            aria_label=f"{cit.citation_number}: {formatted or source_title}",
+            aria_label=f"{idx}: {formatted or source_title}",
             authors=authors,
             date=date,
             formatted_citation=formatted,
         )
 
     # Find which citation numbers are actually referenced in the answer text
-    answer_text = query.answer or ""
     referenced_nums = _extract_referenced_citation_numbers(answer_text)
 
     # Filter footnotes to only those referenced in the text
@@ -68,7 +91,7 @@ async def api_export_query(
 
     # Build notebook_sources from unique source titles
     notebook_sources = list(
-        {cit.source_title for cit in query.citations if cit.source_title}
+        {cit.source_title for cit in unique_citations if cit.source_title}
     )
 
     return ExportResponse(
