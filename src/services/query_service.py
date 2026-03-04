@@ -293,6 +293,39 @@ def _recover_cited_text(
     return snippet.strip() if len(snippet.strip()) >= 20 else None
 
 
+async def reenrich_query_citations(db: AsyncSession, query: Query) -> dict:
+    """Re-run enrichment on existing query citations to recover NULL cited_text.
+
+    Returns stats: {query_id, total_citations, null_before, recovered}.
+    """
+    client = await get_notebooklm_client()
+    if not client:
+        raise RuntimeError("NotebookLM client not available")
+
+    citations = list(query.citations)
+    null_before = sum(1 for c in citations if not c.cited_text)
+
+    logger.info(
+        f"Re-enriching query {query.id}: {len(citations)} citations, "
+        f"{null_before} with NULL cited_text"
+    )
+
+    await _enrich_citations(client, query.notebook_id, citations)
+    await db.commit()
+
+    null_after = sum(1 for c in citations if not c.cited_text)
+    recovered = null_before - null_after
+
+    logger.info(f"Re-enrichment done: recovered {recovered}/{null_before} NULL citations")
+
+    return {
+        "query_id": query.id,
+        "total_citations": len(citations),
+        "null_before": null_before,
+        "recovered": recovered,
+    }
+
+
 async def _refresh_and_get_client():
     """Refresh auth from droplet and return a fresh NotebookLM client.
 

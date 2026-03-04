@@ -3,12 +3,13 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.schemas import QueryListItem, QueryRequest, QueryResponse
 from src.services.notebook_service import get_notebook
-from src.services.query_service import ask_question, get_query, list_queries
+from src.services.query_service import ask_question, get_query, list_queries, reenrich_query_citations
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -70,3 +71,36 @@ async def api_get_query(
     if not query or query.notebook_id != notebook_id:
         raise HTTPException(status_code=404, detail="Query not found")
     return query
+
+
+class ReenrichResponse(BaseModel):
+    query_id: int
+    total_citations: int
+    null_before: int
+    recovered: int
+
+
+@router.post(
+    "/notebooks/{notebook_id}/queries/{query_id}/reenrich",
+    response_model=ReenrichResponse,
+)
+async def api_reenrich_citations(
+    notebook_id: str,
+    query_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-run citation enrichment on an existing query.
+
+    Useful for recovering NULL cited_text on citations that were parsed
+    before the fulltext recovery logic was added.
+    """
+    query = await get_query(db, query_id)
+    if not query or query.notebook_id != notebook_id:
+        raise HTTPException(status_code=404, detail="Query not found")
+
+    try:
+        result = await reenrich_query_citations(db, query)
+        return ReenrichResponse(**result)
+    except Exception as e:
+        logger.error(f"Re-enrichment failed for query {query_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Re-enrichment failed: {e}")
