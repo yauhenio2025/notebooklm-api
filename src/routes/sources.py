@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
+from src.notebooklm_client import get_notebooklm_client
 from src.schemas import SourceFromZotero, SourceResponse
 from src.services.notebook_service import get_notebook
 from src.services.source_service import delete_source, list_sources, sync_source_ids, upload_from_zotero
@@ -85,6 +86,34 @@ async def api_sync_source_ids(
     if "error" in result:
         raise HTTPException(status_code=503, detail=result["error"])
     return result
+
+
+@router.get("/notebooks/{notebook_id}/sources/{source_id}/fulltext")
+async def api_get_source_fulltext(
+    notebook_id: str,
+    source_id: str,
+):
+    """Get the full text content of a source document.
+
+    Wraps NotebookLM's get_fulltext API. Useful for passage lookup
+    and context retrieval around cited quotes.
+    """
+    client = await get_notebooklm_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="NotebookLM client not available")
+
+    try:
+        fulltext = await client.sources.get_fulltext(notebook_id, source_id)
+        content = getattr(fulltext, "content", None) or ""
+        title = getattr(fulltext, "title", None) or ""
+        return {
+            "title": title,
+            "content": content,
+            "char_count": len(content),
+        }
+    except Exception as e:
+        logger.error(f"Failed to get fulltext for source {source_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"Fulltext retrieval failed: {e}")
 
 
 @router.delete("/notebooks/{notebook_id}/sources/{source_id}", status_code=204)
