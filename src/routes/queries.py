@@ -4,9 +4,11 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
+from src.models import Query
 from src.schemas import QueryListItem, QueryRequest, QueryResponse
 from src.services.notebook_service import get_notebook
 from src.services.query_service import ask_question, get_query, list_queries, reenrich_query_citations
@@ -104,3 +106,22 @@ async def api_reenrich_citations(
     except Exception as e:
         logger.error(f"Re-enrichment failed for query {query_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Re-enrichment failed: {e}")
+
+
+@router.delete("/notebooks/{notebook_id}/queries/{query_id}", status_code=204)
+async def api_delete_query(
+    notebook_id: str,
+    query_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a query and all its citations (cascade)."""
+    result = await db.execute(
+        select(Query).where(Query.id == query_id, Query.notebook_id == notebook_id)
+    )
+    query = result.scalar_one_or_none()
+    if not query:
+        raise HTTPException(status_code=404, detail="Query not found")
+
+    await db.delete(query)
+    await db.commit()
+    logger.info(f"Deleted query {query_id} (notebook {notebook_id})")
