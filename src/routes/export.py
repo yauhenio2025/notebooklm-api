@@ -30,10 +30,13 @@ async def api_export_query(
 
     Handles streaming duplication: the notebooklm-py library accumulates
     citations from ALL streaming chunks, causing massive duplication (e.g.
-    24 unique citations → 712 records). We deduplicate by citation_number,
-    keeping the first row for each number (earliest by id = first streaming
-    chunk). This preserves the original numbering that NotebookLM assigned,
-    which matches the [1]-[N] markers in the answer text.
+    27 unique citations → 650 records). citation_number is a streaming
+    counter (1-650), NOT the [N] from the answer text.
+
+    We deduplicate by (source_id, start_char, end_char) to find the unique
+    source passages, then renumber 1-N in order of first appearance. This
+    matches the answer text's [1]-[N] markers because the streaming library
+    emits citations in the same order they appear in the answer.
     """
     query = await get_query(db, query_id)
     if not query or query.notebook_id != notebook_id:
@@ -41,17 +44,18 @@ async def api_export_query(
 
     answer_text = query.answer or ""
 
-    # Deduplicate citations by citation_number: streaming causes 10-50x
-    # duplication per unique citation. Each citation_number maps to exactly
-    # one (source_id, cited_text) pair — the duplication is identical rows
-    # from successive streaming chunks. Deduping by number (not by source+text)
-    # preserves the original numbering so answer text [N] matches footnote N.
-    seen_nums: set[int] = set()
+    # Deduplicate citations: streaming causes 10-50x duplication per unique
+    # passage. citation_number is a streaming counter (NOT the [N] in the
+    # answer text), so we dedup by the actual passage identity: source_id +
+    # character positions. We keep the first row per unique passage (lowest
+    # id = first streaming chunk = first appearance in answer order).
+    seen_keys: set[tuple[str | None, int | None, int | None]] = set()
     unique_citations = []
     for cit in sorted(query.citations, key=lambda c: c.id):
-        if cit.citation_number in seen_nums:
+        key = (cit.source_id, cit.start_char, cit.end_char)
+        if key in seen_keys:
             continue
-        seen_nums.add(cit.citation_number)
+        seen_keys.add(key)
         unique_citations.append(cit)
 
     raw_count = len(query.citations)
@@ -61,21 +65,20 @@ async def api_export_query(
             f"Export query {query_id}: deduplicated {raw_count} → {deduped_count} citations"
         )
 
-    # Build footnotes using original citation_number (no renumbering!)
+    # Renumber 1-N in first-appearance order (matches answer text [1]-[N])
     all_footnotes: dict[int, ExportFootnote] = {}
-    for cit in unique_citations:
-        num = cit.citation_number
+    for idx, cit in enumerate(unique_citations, start=1):
         authors = getattr(cit, "source_authors", None) or ""
         date = getattr(cit, "source_date", None) or ""
         source_title = cit.source_title or ""
         formatted = _format_citation(authors, date, source_title)
 
-        all_footnotes[num] = ExportFootnote(
-            number=num,
+        all_footnotes[idx] = ExportFootnote(
+            number=idx,
             source_file=source_title,
             quoted_text=cit.cited_text or "",
             context_snippet="",
-            aria_label=f"{num}: {formatted or source_title}",
+            aria_label=f"{idx}: {formatted or source_title}",
             authors=authors,
             date=date,
             formatted_citation=formatted,

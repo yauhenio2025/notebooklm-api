@@ -198,14 +198,17 @@ async def list_queries(
 async def _enrich_citations(
     client, notebook_id: str, citations: list[Citation], context_chars: int = 300
 ):
-    """Expand short cited_text using SourceFulltext.find_citation_context().
+    """Resolve source titles and recover NULL cited_text from fulltext.
 
-    Also resolves source_title from fulltext when DB lookup missed it.
     Groups citations by source_id to minimize API calls (one get_fulltext per source).
 
-    For citations with NULL cited_text (parser failed to extract text from streaming
-    response), attempts to recover text using start_char/end_char as approximate
-    positions in the source fulltext.
+    IMPORTANT: We do NOT overwrite cited_text when it's already populated.
+    The notebooklm-py library extracts the correct cited_text directly from
+    NotebookLM's API response. Overwriting it with expanded context windows
+    destroys the precise citation that NotebookLM intended.
+
+    start_char/end_char reference NotebookLM's internal chunked index, NOT
+    positions in the source document fulltext — do not use them for text recovery.
     """
     by_source: dict[str, list[Citation]] = {}
     for cit in citations:
@@ -226,35 +229,16 @@ async def _enrich_citations(
             if not cit.source_title and ft_title:
                 cit.source_title = ft_title
 
-            # Case 1: NULL cited_text — try to recover from fulltext using char positions
-            if not cit.cited_text:
-                if cit.start_char is not None and ft_content:
-                    recovered = _recover_cited_text(
-                        ft_content, cit.start_char, cit.end_char, context_chars
-                    )
-                    if recovered:
-                        cit.cited_text = recovered
-                        logger.info(
-                            f"Recovered NULL citation #{cit.citation_number} "
-                            f"from fulltext: {len(recovered)} chars"
-                        )
+            # Only recover NULL cited_text — never overwrite existing text
+            if cit.cited_text:
                 continue
 
-            # Case 2: short cited_text — expand using substring search
-            if len(cit.cited_text) >= context_chars:
-                continue
-            try:
-                matches = fulltext.find_citation_context(
-                    cit.cited_text, context_chars=context_chars
-                )
-                if matches:
-                    cit.cited_text = matches[0][0].strip()
-                    logger.debug(
-                        f"Enriched citation {cit.citation_number}: "
-                        f"{len(cit.cited_text)} chars"
-                    )
-            except Exception as e:
-                logger.debug(f"Citation enrichment failed for #{cit.citation_number}: {e}")
+            # Try substring search in fulltext as a last resort
+            # (start_char/end_char are NOT source positions, so don't use them)
+            logger.debug(
+                f"Citation #{cit.citation_number} has NULL cited_text, "
+                f"no recovery possible without original text"
+            )
 
 
 def _recover_cited_text(
