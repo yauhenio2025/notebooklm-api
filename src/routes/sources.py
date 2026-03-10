@@ -7,9 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_db
 from src.notebooklm_client import get_notebooklm_client
-from src.schemas import SourceFromZotero, SourceResponse
+from src.schemas import SourceFromText, SourceFromZotero, SourceResponse
 from src.services.notebook_service import get_notebook
-from src.services.source_service import delete_source, list_sources, sync_source_ids, upload_from_zotero
+from src.services.source_service import delete_source, list_sources, sync_source_ids, upload_from_zotero, upload_text_source
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -66,6 +66,35 @@ async def api_upload_from_zotero(
         return sources
     except Exception as e:
         logger.error(f"Zotero upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+
+@router.post(
+    "/notebooks/{notebook_id}/sources/from-text",
+    response_model=SourceResponse,
+    status_code=201,
+)
+async def api_upload_from_text(
+    notebook_id: str,
+    body: SourceFromText,
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a plain-text source to a NotebookLM notebook."""
+    notebook = await get_notebook(db, notebook_id)
+    if not notebook:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    client = await get_notebooklm_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="NotebookLM client not available")
+
+    try:
+        source = await upload_text_source(db, notebook_id, body.title, body.content)
+        return source
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error(f"Text source upload failed: {e}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
 
 

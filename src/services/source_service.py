@@ -80,6 +80,55 @@ async def upload_file_source(
     return source
 
 
+async def upload_text_source(
+    db: AsyncSession,
+    notebook_id: str,
+    title: str,
+    content: str,
+) -> Source:
+    """Upload a plain-text source to a NotebookLM notebook."""
+    client = await get_notebooklm_client()
+    if not client:
+        raise RuntimeError("NotebookLM client not available")
+
+    logger.info(f"Uploading text source to notebook {notebook_id}: {title}")
+
+    src_result = await client.sources.add_text(
+        notebook_id, title, content, wait=True, wait_timeout=120.0
+    )
+
+    logger.info(f"Text source {src_result.id} uploaded and ready")
+
+    # Sync canonical ID: NotebookLM may assign a different ID than the upload returned
+    canonical_id = src_result.id
+    try:
+        nlm_sources = await client.sources.list(notebook_id)
+        for nlm_src in nlm_sources:
+            nlm_title = getattr(nlm_src, "title", None) or ""
+            if nlm_title and title and nlm_title.lower() == title.lower():
+                canonical_id = nlm_src.id
+                logger.info(f"Canonical ID resolved: {src_result.id} -> {canonical_id}")
+                break
+    except Exception as e:
+        logger.warning(f"Failed to sync canonical source ID: {e}")
+
+    source = Source(
+        id=canonical_id,
+        notebook_id=notebook_id,
+        title=title or src_result.title,
+        source_type="text",
+        file_name=None,
+        status="ready" if src_result.is_ready else "processing",
+        uploaded_at=datetime.now(timezone.utc),
+    )
+    db.add(source)
+    await db.commit()
+    await db.refresh(source)
+
+    logger.info(f"Text source persisted: {source.id} - {source.title}")
+    return source
+
+
 async def upload_from_zotero(
     db: AsyncSession,
     notebook_id: str,

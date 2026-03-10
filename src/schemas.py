@@ -50,6 +50,11 @@ class SourceFromZotero(BaseModel):
     item_keys: list[str] | None = None
 
 
+class SourceFromText(BaseModel):
+    title: str = Field(..., min_length=1, max_length=500)
+    content: str = Field(..., min_length=1)
+
+
 # --- Queries ---
 
 class QueryRequest(BaseModel):
