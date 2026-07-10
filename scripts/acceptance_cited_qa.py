@@ -65,7 +65,7 @@ async def main() -> int:
             print(f"uploading: {book.name} ({book.stat().st_size // 1024} KB)...")
             src = await client.sources.add_file(nb.id, str(book))
             print(f"uploaded source: {src.id}")
-            await client.sources.wait_until_ready(nb.id, timeout=600)
+            await client.sources.wait_until_ready(nb.id, src.id, timeout=600)
         else:
             print(f"reusing source: {src.id}")
 
