@@ -209,7 +209,7 @@ async def build_notebook_from_instruction(instruction: str, db) -> dict:
             # Auth likely expired — attempt auto-refresh
             logger.warning(
                 f"[build-notebook] Notebook creation failed with auth error: {e}. "
-                "Attempting auto-refresh from droplet..."
+                "Attempting master-token auto-refresh..."
             )
             try:
                 from src.services.auth_service import full_auth_refresh
@@ -217,13 +217,13 @@ async def build_notebook_from_instruction(instruction: str, db) -> dict:
                 refresh_result = await full_auth_refresh()
                 logger.info(
                     f"[build-notebook] Auth auto-refresh succeeded "
-                    f"({refresh_result['extraction']['cookie_count']} cookies, "
+                    f"({refresh_result['cookie_count']} cookies, "
                     f"{refresh_result['total_duration_s']}s)"
                 )
                 steps.append({
                     "step": "auth_auto_refresh",
                     "duration_s": refresh_result["total_duration_s"],
-                    "cookie_count": refresh_result["extraction"]["cookie_count"],
+                    "cookie_count": refresh_result["cookie_count"],
                 })
 
                 # Retry notebook creation once

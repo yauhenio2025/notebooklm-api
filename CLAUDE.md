@@ -25,8 +25,11 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 
 ## Architecture Notes
 - notebooklm-py handles all Google NotebookLM communication (no browser needed at runtime)
-- Authentication via exported cookie JSON from `notebooklm login` on the DigitalOcean droplet
-- Singleton NotebookLM client initialized lazily from NOTEBOOKLM_AUTH_JSON env var
+- Authentication via master token (notebooklm-py 0.8.0a3, pinned git main): a durable Google credential minted once via `notebooklm login --master-token` (one interactive browser sign-in), stored as `master_token.json` in the auth profile dir. Expired sessions re-mint fresh cookies in-process, headlessly — no droplet, no manual refresh.
+- On Render: the token is a Secret File (`/etc/secrets/master_token.json`); the app seeds it into the writable profile dir (`NOTEBOOKLM_HOME=/opt/render/project/.notebooklm`) and mints `storage_state.json` at startup (ephemeral disk is fine — every boot re-mints)
+- Singleton NotebookLM client initialized lazily from the profile's storage_state.json (`src/notebooklm_client.py`)
+- SECURITY: the master token is a full-account durable Google credential — never print/log/commit it; rotation = re-mint locally + replace the Render secret file
+- Single-consumer per Google account: concurrent re-mints from several processes invalidate each other's sessions — keep ONE service instance
 - PostgreSQL stores notebooks, sources, queries, and citations for history/export
 - Zotero integration fetches PDFs and uploads them to NotebookLM notebooks
 - Natural language orchestrator: Claude Haiku parses instructions → resolves Zotero collections → creates notebooks → uploads PDFs
@@ -38,12 +41,12 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 
 ## Environment Variables
 - `DATABASE_URL` - PostgreSQL connection string (Render provides this)
-- `NOTEBOOKLM_AUTH_JSON` - JSON string of Google auth cookies from notebooklm-py login
+- `MASTER_TOKEN_FILE` - Path to master_token.json secret file (Render: /etc/secrets/master_token.json); seeded into the profile dir at startup
+- `NOTEBOOKLM_HOME` - notebooklm-py home dir override (Render: /opt/render/project/.notebooklm — must be writable); unset locally (defaults to ~/.notebooklm)
+- `NOTEBOOKLM_PROFILE` - auth profile name (optional, library default: default)
 - `ZOTERO_API_KEY` - Zotero API key for group library access
 - `ZOTERO_GROUP_ID` - Zotero group library ID (default: 5579237)
 - `ANTHROPIC_API_KEY` - Anthropic API key for Claude-powered intent parsing in /api/build-notebook
-- `DROPLET_HOST` - DigitalOcean droplet IP for auth refresh (default: 207.154.192.181)
-- `DROPLET_SSH_KEY` - SSH private key (PEM format) for root@droplet, used by POST /api/auth/refresh
 
 ## Render Deployment
 - Service: `notebooklm-api` (Starter plan, Singapore)

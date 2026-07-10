@@ -12,8 +12,14 @@ services:
         fromDatabase:
           name: notebook-lm-db
           property: connectionString
-      - key: NOTEBOOKLM_AUTH_JSON
-        sync: false
+      # Master-token auth: the operator uploads master_token.json as a Render
+      # Secret File (dashboard → Environment → Secret Files). The app seeds it
+      # into the writable profile dir (NOTEBOOKLM_HOME) at startup and re-mints
+      # cookies from it on demand. No droplet, no cookie env var.
+      - key: MASTER_TOKEN_FILE
+        value: /etc/secrets/master_token.json
+      - key: NOTEBOOKLM_HOME
+        value: /opt/render/project/.notebooklm
       - key: ZOTERO_API_KEY
         sync: false
       - key: ZOTERO_GROUP_ID

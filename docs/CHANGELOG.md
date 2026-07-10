@@ -5,8 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- **Auth: droplet → master token (2026-07-11).** Replaced the DigitalOcean droplet SSH/CDP cookie-extraction auth with notebooklm-py master-token headless auth. The durable master token (minted once via `notebooklm login --master-token`) lives in the auth profile dir and re-mints fresh web cookies on demand — expired sessions self-heal in-process, no browser at runtime. On Render the token arrives as a Secret File (`MASTER_TOKEN_FILE=/etc/secrets/master_token.json`) seeded into the writable profile dir (`NOTEBOOKLM_HOME`) at startup. ([src/notebooklm_client.py](src/notebooklm_client.py), [src/services/auth_service.py](src/services/auth_service.py), [src/routes/health.py](src/routes/health.py), [render.yaml](render.yaml))
+- notebooklm-py upgraded from >=0.3.0 to pinned git main `49d129db` (0.8.0a3) with `[headless]` extra — master-token support is unreleased on PyPI ([requirements.txt](requirements.txt))
+- `AuthRefreshResponse` simplified: `{status, cookie_count, client_reset, total_duration_s, error}` (dropped SSH `extraction` block) ([src/schemas.py](src/schemas.py))
+- `/health` and `/status` now report master-token profile state (`master_token` / `storage_state_only` / `secret_file_pending` / `not_configured`) ([src/routes/health.py](src/routes/health.py))
+
+### Removed
+- Droplet auth stack: SSH/CDP cookie extraction (`refresh_auth_from_droplet`, `update_notebooklm_auth`), `DROPLET_HOST`/`DROPLET_SSH_KEY`/`NOTEBOOKLM_AUTH_JSON` settings, asyncssh dependency, and the 20-min background auth-keepalive loop in main.py (the library rotates/re-mints cookies itself)
+
 ### Added
-- Background auth keepalive: proactively refreshes NotebookLM cookies every 20 min to prevent session staleness ([src/main.py](src/main.py))
+- Background auth keepalive: proactively refreshes NotebookLM cookies every 20 min to prevent session staleness ([src/main.py](src/main.py)) — **removed again 2026-07-11 with the master-token migration**
 - Auto-retry on queries: detects stale auth/RPC/timeout errors, refreshes cookies, retries once — no manual intervention needed ([src/services/query_service.py](src/services/query_service.py))
 - Export: handles citation ranges `[4-6]`, lists `[1,2]`, markdown `**bold**`/`*italic*`, and filters footnotes to only those referenced in answer text ([src/routes/export.py](src/routes/export.py))
 - Citation enrichment: expand ~70 char cited_text to ~300 char passages using `SourceFulltext.find_citation_context()` ([src/services/query_service.py](src/services/query_service.py))

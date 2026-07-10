@@ -1,33 +1,34 @@
 # Feature Inventory
 
-> Auto-maintained by Claude Code. Last updated: 2026-02-24 (citation quality fix)
+> Auto-maintained by Claude Code. Last updated: 2026-07-11 (master-token auth)
 
 ## Health & Monitoring
 
 ### Health Check
 - **Status**: Active
-- **Description**: Basic health endpoint for Render monitoring - checks DB connectivity and auth config
+- **Description**: Basic health endpoint for Render monitoring - checks DB connectivity and master-token profile state
 - **Entry Points**:
-  - `src/routes/health.py:18` - GET /health endpoint
-- **Added**: 2026-02-24
+  - `src/routes/health.py:37` - GET /health endpoint
+  - `src/routes/health.py:17-34` - _auth_state() profile-state probe
+- **Added**: 2026-02-24 | **Modified**: 2026-07-11
 
 ### Status Check
 - **Status**: Active
-- **Description**: Detailed status including DB tables, NotebookLM client state, Zotero config
+- **Description**: Detailed status including DB tables, live NotebookLM client probe, Zotero config
 - **Entry Points**:
-  - `src/routes/health.py:43` - GET /status endpoint
-- **Added**: 2026-02-24
+  - `src/routes/health.py:60` - GET /status endpoint
+- **Added**: 2026-02-24 | **Modified**: 2026-07-11
 
-### Auth Refresh
+### Auth Refresh (master token)
 - **Status**: Active
-- **Description**: POST /api/auth/refresh — SSHes to DigitalOcean droplet, extracts fresh Google cookies via Playwright CDP, resets NotebookLM client singleton
+- **Description**: POST /api/auth/refresh — re-mints fresh Google cookies from the durable master token (headless, no browser/droplet) and resets the NotebookLM client singleton. The library also self-heals expired sessions in-process (layer-4 recovery); this is the manual path.
 - **Entry Points**:
-  - `src/routes/health.py:94-121` - POST /api/auth/refresh endpoint
-  - `src/services/auth_service.py:37-120` - SSH + cookie extraction from droplet
-  - `src/services/auth_service.py:123-175` - Client reset with fresh cookies
-  - `src/services/auth_service.py:178-205` - Full end-to-end refresh orchestration
-- **Dependencies**: asyncssh, Playwright CDP on droplet
-- **Added**: 2026-02-24
+  - `src/routes/health.py:110-131` - POST /api/auth/refresh endpoint
+  - `src/services/auth_service.py:18-71` - full_auth_refresh() re-mint orchestration
+  - `src/notebooklm_client.py:40-58` - seed_profile_from_secret() (Render secret file → profile dir)
+  - `src/notebooklm_client.py:61-70` - mint_storage_state() cookie re-mint
+- **Dependencies**: notebooklm-py[headless] (gpsoauth), MASTER_TOKEN_FILE secret
+- **Added**: 2026-02-24 | **Modified**: 2026-07-11
 
 ## Notebooks
 

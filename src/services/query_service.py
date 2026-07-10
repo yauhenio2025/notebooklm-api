@@ -311,7 +311,7 @@ async def reenrich_query_citations(db: AsyncSession, query: Query) -> dict:
 
 
 async def _refresh_and_get_client():
-    """Refresh auth from droplet and return a fresh NotebookLM client.
+    """Re-mint auth from the master token and return a fresh NotebookLM client.
 
     Returns None if refresh fails.
     """
@@ -320,7 +320,7 @@ async def _refresh_and_get_client():
         refresh_result = await full_auth_refresh()
         logger.info(
             f"Auth auto-refresh succeeded "
-            f"({refresh_result['extraction']['cookie_count']} cookies, "
+            f"({refresh_result['cookie_count']} cookies, "
             f"{refresh_result['total_duration_s']}s)"
         )
         client = await get_notebooklm_client()

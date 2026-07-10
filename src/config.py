@@ -16,10 +16,13 @@ class Settings(BaseSettings):
         description="PostgreSQL connection string",
     )
 
-    # NotebookLM auth
-    notebooklm_auth_json: str = Field(
+    # NotebookLM auth (master-token profile)
+    # The library resolves the profile dir from NOTEBOOKLM_HOME / NOTEBOOKLM_PROFILE.
+    # master_token_file points at a read-only secret file (Render: /etc/secrets/...)
+    # that is seeded into the writable profile dir at client startup.
+    master_token_file: str = Field(
         default="",
-        description="JSON string of Google auth cookies from notebooklm-py login",
+        description="Path to master_token.json secret file to seed the auth profile from",
     )
 
     # Zotero
@@ -36,16 +39,6 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(
         default="",
         description="Anthropic API key for Claude-powered intent parsing",
-    )
-
-    # DigitalOcean droplet for auth refresh
-    droplet_host: str = Field(
-        default="207.154.192.181",
-        description="DigitalOcean droplet IP running Chrome with NotebookLM session",
-    )
-    droplet_ssh_key: str = Field(
-        default="",
-        description="SSH private key for root@droplet (PEM format, as string)",
     )
 
     # App
