@@ -83,9 +83,10 @@ async def status(
         result.database = f"error: {type(e).__name__}"
         result.status = "degraded"
 
-    # NotebookLM auth: probe the live client
+    # NotebookLM auth: probe the live client. Include secret_file_pending —
+    # client init is what seeds the profile from the secret file.
     result.notebooklm_auth = _auth_state()
-    if result.notebooklm_auth in ("master_token", "storage_state_only"):
+    if result.notebooklm_auth in ("master_token", "storage_state_only", "secret_file_pending"):
         try:
             from src.notebooklm_client import get_notebooklm_client
 
