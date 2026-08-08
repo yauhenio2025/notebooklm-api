@@ -50,6 +50,8 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 - `MASTER_TOKEN_FILE` - Path to master_token.json secret file (Render: /etc/secrets/master_token.json); seeded into the profile dir at startup
 - `NOTEBOOKLM_HOME` - notebooklm-py home dir override (Render: /opt/render/project/.notebooklm — must be writable); unset locally (defaults to ~/.notebooklm)
 - `NOTEBOOKLM_PROFILE` - auth profile name (optional, library default: default)
+- `NOTEBOOKLM_QUERY_TIMEOUT_SECONDS` - Aggregate batch-query timeout in seconds (default: 1200; allowed: 60-3600)
+- `NOTEBOOKLM_CHAT_RESPONSE_MAX_BYTES` - Maximum chat response buffered by notebooklm-py (default: 33554432 / 32 MiB; allowed: 1-64 MiB)
 - `ZOTERO_API_KEY` - Zotero API key for group library access
 - `ZOTERO_GROUP_ID` - Zotero group library ID (default: 5579237)
 - `ANTHROPIC_API_KEY` - Anthropic API key for Claude-powered intent parsing in /api/build-notebook

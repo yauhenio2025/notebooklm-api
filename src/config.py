@@ -5,6 +5,8 @@ from functools import lru_cache
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings
 
+MEBIBYTE = 1024 * 1024
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -21,7 +23,9 @@ class Settings(BaseSettings):
     # that is seeded into the writable profile dir at client startup.
     master_token_file: str = Field(
         default="",
-        description="Path to master_token.json secret file to seed the auth profile from",
+        description=(
+            "Path to master_token.json secret file to seed the auth profile from"
+        ),
     )
 
     # Zotero
@@ -62,6 +66,12 @@ class Settings(BaseSettings):
         ge=60,
         le=3600,
         description="Aggregate timeout for one NotebookLM batch query",
+    )
+    notebooklm_chat_response_max_bytes: int = Field(
+        default=32 * MEBIBYTE,
+        ge=MEBIBYTE,
+        le=64 * MEBIBYTE,
+        description="Maximum NotebookLM chat response size buffered by the SDK",
     )
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

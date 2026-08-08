@@ -119,6 +119,7 @@ async def get_notebooklm_client():
         try:
             from notebooklm import NotebookLMClient
 
+            settings = get_settings()
             storage_path, _ = _profile_paths()
             master_token_path = seed_profile_from_secret()
 
@@ -143,6 +144,7 @@ async def get_notebooklm_client():
                 str(storage_path),
                 rate_limit_max_retries=0,
                 server_error_max_retries=0,
+                chat_response_max_bytes=settings.notebooklm_chat_response_max_bytes,
             )
             _disable_chat_internal_retries(_client)
             # Enter the async context manager to keep the session alive
