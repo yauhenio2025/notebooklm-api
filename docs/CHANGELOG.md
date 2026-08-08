@@ -42,10 +42,13 @@ See [`docs/SECURITY.md`](SECURITY.md) for the deployment contract. Google master
 - Idempotent column migrations in `init_db()` for new columns ([src/database.py](src/database.py))
 
 ### Fixed
-- Bounded notebooklm-py's in-memory chat response buffer to 32 MiB by default
-  (configurable from 1-64 MiB with `NOTEBOOKLM_CHAT_RESPONSE_MAX_BYTES`) so an
-  oversized provider response fails without consuming the SDK's 256 MiB default
-  allowance and risking an instance OOM restart.
+- Replaced whole-response buffering for progressive NotebookLM chat streams.
+  Google repeats the answer-so-far, citations, and support state across many
+  frames; the wrapper now parses bounded chunks, retains only the winning frame,
+  and discards superseded snapshots immediately.
+- Separated limits and telemetry for prose answer bytes, retained citation text,
+  one raw protocol frame, and cumulative wire traffic. Citation passages remain
+  separately persisted and no longer inflate the reported answer size.
 - Source IDs now match canonical NotebookLM IDs so citation→source title resolution works (was always null)
 - Temp file naming: PDFs uploaded with real filename (e.g. `deutschmann2001.pdf`) instead of `tmp*.pdf` so NotebookLM source titles are human-readable
 - Citation fulltext fallback: `source_title` resolved from `SourceFulltext.title` when DB lookup misses

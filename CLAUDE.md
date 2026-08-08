@@ -51,7 +51,10 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 - `NOTEBOOKLM_HOME` - notebooklm-py home dir override (Render: /opt/render/project/.notebooklm — must be writable); unset locally (defaults to ~/.notebooklm)
 - `NOTEBOOKLM_PROFILE` - auth profile name (optional, library default: default)
 - `NOTEBOOKLM_QUERY_TIMEOUT_SECONDS` - Aggregate batch-query timeout in seconds (default: 1200; allowed: 60-3600)
-- `NOTEBOOKLM_CHAT_RESPONSE_MAX_BYTES` - Maximum chat response buffered by notebooklm-py (default: 33554432 / 32 MiB; allowed: 1-64 MiB)
+- `NOTEBOOKLM_CHAT_FRAME_MAX_BYTES` - Raw safety limit for one retained progressive protocol frame (default: 192 MiB)
+- `NOTEBOOKLM_CHAT_ANSWER_MAX_BYTES` - Prose-answer limit, excluding citations (default: 4 MiB)
+- `NOTEBOOKLM_CHAT_CITATION_MAX_BYTES` - Combined retained citation-passage limit (default: 64 MiB)
+- `NOTEBOOKLM_CHAT_WIRE_MAX_BYTES` - Runaway ceiling for cumulative wire traffic, not answer size (default: 1 GiB)
 - `ZOTERO_API_KEY` - Zotero API key for group library access
 - `ZOTERO_GROUP_ID` - Zotero group library ID (default: 5579237)
 - `ANTHROPIC_API_KEY` - Anthropic API key for Claude-powered intent parsing in /api/build-notebook
@@ -59,7 +62,7 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 - `CORS_ALLOWED_ORIGINS` - Optional comma-separated exact browser origins; empty by default
 
 ## Render Deployment
-- Service: `notebooklm-api` (Starter plan, Singapore)
+- Service: `notebooklm-api` (Standard plan, Singapore)
 - Database: `notebook-lm-db` (Render PostgreSQL, Starter, Singapore)
 - DB internal URL: supplied through Render's `DATABASE_URL` environment variable; never commit the value
 - Auto-deploy: enabled on `master` branch push
