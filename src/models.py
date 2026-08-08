@@ -88,6 +88,26 @@ class Query(Base):
         back_populates="query", cascade="all, delete-orphan"
     )
 
+    @property
+    def outcome_ambiguous(self) -> bool | None:
+        """Expose the safe ambiguity flag without returning arbitrary metadata."""
+        value = (self.metadata_ or {}).get("outcome_ambiguous")
+        return value if isinstance(value, bool) else None
+
+    @property
+    def retry_safe(self) -> bool | None:
+        """Expose the safe retry flag without returning arbitrary metadata."""
+        value = (self.metadata_ or {}).get("retry_safe")
+        return value if isinstance(value, bool) else None
+
+    @property
+    def error_type(self) -> str | None:
+        """Expose only class-shaped failure labels, never provider error text."""
+        value = (self.metadata_ or {}).get("error_type")
+        if isinstance(value, str) and value.isascii() and value.isidentifier():
+            return value[:128]
+        return None
+
 
 class Citation(Base):
     __tablename__ = "citations"

@@ -103,6 +103,9 @@ class QueryResponse(BaseModel):
     asked_at: datetime
     answered_at: datetime | None = None
     citations: list[CitationResponse] = []
+    outcome_ambiguous: bool | None = None
+    retry_safe: bool | None = None
+    error_type: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -114,6 +117,9 @@ class QueryListItem(BaseModel):
     asked_at: datetime
     answered_at: datetime | None = None
     citation_count: int = 0
+    outcome_ambiguous: bool | None = None
+    retry_safe: bool | None = None
+    error_type: str | None = None
 
     model_config = {"from_attributes": True}
 
