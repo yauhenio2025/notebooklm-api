@@ -64,6 +64,7 @@ from src.routes.health import router as health_router
 from src.routes.notebooks import router as notebooks_router
 from src.routes.orchestrator import router as orchestrator_router
 from src.routes.queries import router as queries_router
+from src.routes.remote import router as remote_router
 from src.routes.sources import router as sources_router
 from src.routes.zotero import router as zotero_router
 
@@ -78,6 +79,12 @@ app.include_router(
 )
 app.include_router(
     queries_router, prefix="/api", tags=["Queries"], dependencies=protected
+)
+app.include_router(
+    remote_router,
+    prefix="/api",
+    tags=["Remote inventory"],
+    dependencies=protected,
 )
 app.include_router(
     sources_router, prefix="/api", tags=["Sources"], dependencies=protected

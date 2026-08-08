@@ -142,6 +142,15 @@
 
 ## Infrastructure
 
+### Actual Remote Inventory
+- **Status**: Active
+- **Description**: Protected, read-only reconciliation endpoints list notebooks and sources directly from Google NotebookLM rather than from wrapper PostgreSQL. This lets Ganrl recover by stable managed title/identity if Google accepted a create or upload just before the wrapper crashed. Responses expose only `id`, `title`, `status`, and `type`; provider exception messages are suppressed from responses and logs.
+- **Entry Points**:
+  - `src/routes/remote.py` - `GET /api/remote/notebooks` and `GET /api/remote/notebooks/{notebook_id}/sources`
+  - `src/services/remote_inventory_service.py` - direct provider reads and narrow response mapping
+  - `src/schemas.py` - remote notebook/source response contracts
+- **Added**: 2026-08-08
+
 ### Consumer API Authentication
 - **Status**: Active
 - **Description**: All `/api/*` research/data/mutation routes and `/status` require the `NOTEBOOKLM_API_KEY` value in `X-API-Key`. Comparison uses fixed-length SHA-256 digests and `secrets.compare_digest`. Missing server configuration fails closed; only `/health` is public. OpenAPI declares the `NotebookLMConsumerKey` header scheme.

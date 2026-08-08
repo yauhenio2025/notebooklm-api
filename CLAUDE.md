@@ -73,6 +73,19 @@ The Google master token must never be sent by a caller. It remains an internal
 service credential used only to authenticate the wrapper to Google NotebookLM.
 See `docs/SECURITY.md` for deployment and verification details.
 
+## Remote reconciliation inventory
+
+Two authenticated, read-only endpoints bypass PostgreSQL and inspect the
+actual Google NotebookLM account:
+
+- `GET /api/remote/notebooks`
+- `GET /api/remote/notebooks/{notebook_id}/sources`
+
+Their minimal `id`, `title`, `status`, and `type` payloads let a consumer
+reconcile the crash window where Google accepted a create/upload but the
+wrapper died before committing its local row. They never create, synchronize,
+or delete provider state. Provider failure messages are not returned or logged.
+
 ## notebooklm-py API Notes
 - All methods are async coroutines (must await)
 - Client: `await NotebookLMClient.from_storage(path)` — async context manager

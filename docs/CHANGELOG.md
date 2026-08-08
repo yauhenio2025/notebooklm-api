@@ -14,6 +14,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 See [`docs/SECURITY.md`](SECURITY.md) for the deployment contract. Google master-token behavior is unchanged and remains separate from consumer authentication.
 
+### Added
+- Added authenticated, read-only `GET /api/remote/notebooks` and `GET /api/remote/notebooks/{notebook_id}/sources` endpoints. They query the actual Google NotebookLM account, not wrapper database rows, so consumers can reconcile provider mutations after a crash between Google acceptance and local commit.
+- Remote inventory responses are deliberately narrow (`id`, `title`, `status`, `type`). Provider error text is neither returned nor logged; callers receive stable sanitized 502/503 errors.
+- Added fake-client tests proving direct provider reads, notebook scoping, enum/readiness normalization, malformed identity rejection, and failure sanitization.
+
 ### Changed
 - **Auth: droplet → master token (2026-07-11).** Replaced the DigitalOcean droplet SSH/CDP cookie-extraction auth with notebooklm-py master-token headless auth. The durable master token (minted once via `notebooklm login --master-token`) lives in the auth profile dir and re-mints fresh web cookies on demand — expired sessions self-heal in-process, no browser at runtime. On Render the token arrives as a Secret File (`MASTER_TOKEN_FILE=/etc/secrets/master_token.json`) seeded into the writable profile dir (`NOTEBOOKLM_HOME`) at startup. ([src/notebooklm_client.py](src/notebooklm_client.py), [src/services/auth_service.py](src/services/auth_service.py), [src/routes/health.py](src/routes/health.py), [render.yaml](render.yaml))
 - notebooklm-py upgraded from >=0.3.0 to pinned git main `49d129db` (0.8.0a3) with `[headless]` extra — master-token support is unreleased on PyPI ([requirements.txt](requirements.txt))

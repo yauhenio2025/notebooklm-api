@@ -54,6 +54,26 @@ class SourceFromText(BaseModel):
     content: str = Field(..., min_length=1)
 
 
+# --- Remote provider inventory ---
+
+class RemoteNotebookResponse(BaseModel):
+    """Minimal identity returned directly by Google NotebookLM."""
+
+    id: str = Field(..., min_length=1, max_length=255)
+    title: str = Field(..., min_length=1, max_length=1000)
+    status: str = Field(..., min_length=1, max_length=128)
+    type: str = Field(default="notebook", min_length=1, max_length=128)
+
+
+class RemoteSourceResponse(BaseModel):
+    """Minimal source identity returned directly by Google NotebookLM."""
+
+    id: str = Field(..., min_length=1, max_length=255)
+    title: str = Field(..., min_length=1, max_length=1000)
+    status: str = Field(..., min_length=1, max_length=128)
+    type: str = Field(..., min_length=1, max_length=128)
+
+
 # --- Queries ---
 
 class QueryRequest(BaseModel):

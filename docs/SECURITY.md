@@ -21,6 +21,12 @@ These credentials are not interchangeable.
   records. OpenAPI marks every protected operation with the
   `NotebookLMConsumerKey` scheme.
 
+The two remote reconciliation reads (`GET /api/remote/notebooks` and
+`GET /api/remote/notebooks/{notebook_id}/sources`) are protected by the same
+key. They bypass local PostgreSQL deliberately, but return only minimal remote
+identity/status fields. Upstream exception messages are suppressed because
+they may contain source titles or provider diagnostics.
+
 If `NOTEBOOKLM_API_KEY` is absent, protected routes return HTTP 503. A missing
 or incorrect caller key returns HTTP 401. There is no local or debug bypass.
 
