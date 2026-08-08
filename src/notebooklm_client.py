@@ -115,8 +115,11 @@ async def get_notebooklm_client():
             )
             return _client
 
-        except Exception as e:
-            logger.error(f"Failed to initialize NotebookLM client: {e}")
+        except Exception as exc:
+            logger.error(
+                "Failed to initialize NotebookLM client error_type=%s",
+                type(exc).__name__,
+            )
             _client_initialized = True
             _client = None
             return None
@@ -128,8 +131,11 @@ async def close_client():
     if _client:
         try:
             await _client.__aexit__(None, None, None)
-        except Exception as e:
-            logger.debug(f"Error closing NotebookLM client: {e}")
+        except Exception as exc:
+            logger.debug(
+                "Error closing NotebookLM client error_type=%s",
+                type(exc).__name__,
+            )
     _client = None
     _client_initialized = False
     logger.info("NotebookLM client closed")
