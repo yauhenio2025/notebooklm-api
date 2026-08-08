@@ -762,6 +762,7 @@ def test_batch_query_commits_running_before_one_provider_call_then_completes(
         assert len(session.added) == 1
         assert query.metadata_["citation_count"] == 1
         assert query.metadata_["answer_length"] == 15
+        assert query.metadata_["citation_text_length"] == len("Exact support")
         assert query.metadata_["batch_position"] == 1
         assert str(uuid.UUID(query.metadata_["claim_owner"])) == query.metadata_[
             "claim_owner"

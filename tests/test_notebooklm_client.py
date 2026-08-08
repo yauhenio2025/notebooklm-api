@@ -15,7 +15,11 @@ def test_client_passes_response_cap_and_disables_hidden_retries(monkeypatch, tmp
     storage_path = tmp_path / "storage_state.json"
     storage_path.write_text("{}", encoding="utf-8")
     captured: dict[str, object] = {}
-    configured_response_cap = 8 * MEBIBYTE
+    installed: list[dict[str, int]] = []
+    configured_frame_cap = 128 * MEBIBYTE
+    configured_answer_cap = 2 * MEBIBYTE
+    configured_citation_cap = 32 * MEBIBYTE
+    configured_wire_cap = 512 * MEBIBYTE
 
     class FakeTransport:
         async def perform_authed_post(self, **_kwargs: object):
@@ -51,9 +55,17 @@ def test_client_passes_response_cap_and_disables_hidden_retries(monkeypatch, tmp
     monkeypatch.setattr(notebooklm_client, "seed_profile_from_secret", lambda: None)
     monkeypatch.setattr(
         notebooklm_client,
+        "install_chat_stream_reducer",
+        lambda **limits: installed.append(limits),
+    )
+    monkeypatch.setattr(
+        notebooklm_client,
         "get_settings",
         lambda: SimpleNamespace(
-            notebooklm_chat_response_max_bytes=configured_response_cap
+            notebooklm_chat_frame_max_bytes=configured_frame_cap,
+            notebooklm_chat_answer_max_bytes=configured_answer_cap,
+            notebooklm_chat_citation_max_bytes=configured_citation_cap,
+            notebooklm_chat_wire_max_bytes=configured_wire_cap,
         ),
     )
     monkeypatch.setattr(notebooklm_client, "_client", None)
@@ -69,32 +81,53 @@ def test_client_passes_response_cap_and_disables_hidden_retries(monkeypatch, tmp
         "path": str(storage_path),
         "rate_limit_max_retries": 0,
         "server_error_max_retries": 0,
-        "chat_response_max_bytes": configured_response_cap,
+        "chat_response_max_bytes": configured_frame_cap,
     }
+    assert installed == [
+        {
+            "wire_max_bytes": configured_wire_cap,
+            "answer_max_bytes": configured_answer_cap,
+            "citation_max_bytes": configured_citation_cap,
+        }
+    ]
 
 
-def test_chat_response_cap_is_environment_configurable_and_bounded(monkeypatch):
-    field = Settings.model_fields["notebooklm_chat_response_max_bytes"]
-    assert field.default == 32 * MEBIBYTE
+def test_chat_frame_cap_is_environment_configurable_and_bounded(monkeypatch):
+    field = Settings.model_fields["notebooklm_chat_frame_max_bytes"]
+    assert field.default == 192 * MEBIBYTE
 
-    for valid_value in (MEBIBYTE, 8 * MEBIBYTE, 64 * MEBIBYTE):
+    for valid_value in (16 * MEBIBYTE, 128 * MEBIBYTE, 256 * MEBIBYTE):
         monkeypatch.setenv(
-            "NOTEBOOKLM_CHAT_RESPONSE_MAX_BYTES",
+            "NOTEBOOKLM_CHAT_FRAME_MAX_BYTES",
             str(valid_value),
         )
+        monkeypatch.setenv(
+            "NOTEBOOKLM_CHAT_CITATION_MAX_BYTES",
+            str(min(valid_value, 64 * MEBIBYTE)),
+        )
         assert (
-            Settings(_env_file=None).notebooklm_chat_response_max_bytes
+            Settings(_env_file=None).notebooklm_chat_frame_max_bytes
             == valid_value
         )
 
-    for invalid_value in (MEBIBYTE - 1, 64 * MEBIBYTE + 1):
+    for invalid_value in (16 * MEBIBYTE - 1, 256 * MEBIBYTE + 1):
         monkeypatch.setenv(
-            "NOTEBOOKLM_CHAT_RESPONSE_MAX_BYTES",
+            "NOTEBOOKLM_CHAT_FRAME_MAX_BYTES",
             str(invalid_value),
         )
         with pytest.raises(ValidationError):
             Settings(_env_file=None)
 
+
+def test_chat_wire_cap_is_configured_separately_from_one_frame(monkeypatch):
+    field = Settings.model_fields["notebooklm_chat_wire_max_bytes"]
+    assert field.default == 1024 * MEBIBYTE
+
+    monkeypatch.setenv("NOTEBOOKLM_CHAT_FRAME_MAX_BYTES", str(128 * MEBIBYTE))
+    monkeypatch.setenv("NOTEBOOKLM_CHAT_WIRE_MAX_BYTES", str(512 * MEBIBYTE))
+    configured = Settings(_env_file=None)
+    assert configured.notebooklm_chat_frame_max_bytes == 128 * MEBIBYTE
+    assert configured.notebooklm_chat_wire_max_bytes == 512 * MEBIBYTE
 
 def test_chat_transport_forces_auth_refresh_replay_off():
     calls: list[dict[str, object]] = []

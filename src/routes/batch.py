@@ -463,6 +463,9 @@ async def _persist_owned_success(
 ) -> tuple[bool, int, int]:
     references = list(ask_result.references)
     answer = ask_result.answer
+    citation_text_length = sum(
+        len(reference.cited_text or "") for reference in references
+    )
     terminal_at = datetime.now(timezone.utc)
     result = await db.execute(
         update(Query)
@@ -478,6 +481,7 @@ async def _persist_owned_success(
                 "heartbeat_at": terminal_at.isoformat(),
                 "citation_count": len(references),
                 "answer_length": len(answer),
+                "citation_text_length": citation_text_length,
             },
         )
         .returning(Query.id)

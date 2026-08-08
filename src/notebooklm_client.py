@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from src.config import get_settings
+from src.notebooklm_chat_stream import install_chat_stream_reducer
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,11 @@ async def get_notebooklm_client():
             from notebooklm import NotebookLMClient
 
             settings = get_settings()
+            install_chat_stream_reducer(
+                wire_max_bytes=settings.notebooklm_chat_wire_max_bytes,
+                answer_max_bytes=settings.notebooklm_chat_answer_max_bytes,
+                citation_max_bytes=settings.notebooklm_chat_citation_max_bytes,
+            )
             storage_path, _ = _profile_paths()
             master_token_path = seed_profile_from_secret()
 
@@ -144,7 +150,7 @@ async def get_notebooklm_client():
                 str(storage_path),
                 rate_limit_max_retries=0,
                 server_error_max_retries=0,
-                chat_response_max_bytes=settings.notebooklm_chat_response_max_bytes,
+                chat_response_max_bytes=settings.notebooklm_chat_frame_max_bytes,
             )
             _disable_chat_internal_retries(_client)
             # Enter the async context manager to keep the session alive

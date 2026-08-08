@@ -142,6 +142,9 @@ async def ask_question(
             "response_type": type(result).__name__,
             "citation_count": len(citations),
             "answer_length": len(result.answer),
+            "citation_text_length": sum(
+                len(citation.cited_text or "") for citation in citations
+            ),
             "is_follow_up": result.is_follow_up,
         }
 

@@ -2,10 +2,11 @@
 
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
 MEBIBYTE = 1024 * 1024
+GIBIBYTE = 1024 * MEBIBYTE
 
 
 class Settings(BaseSettings):
@@ -67,14 +68,67 @@ class Settings(BaseSettings):
         le=3600,
         description="Aggregate timeout for one NotebookLM batch query",
     )
-    notebooklm_chat_response_max_bytes: int = Field(
-        default=32 * MEBIBYTE,
+    notebooklm_chat_frame_max_bytes: int = Field(
+        default=192 * MEBIBYTE,
+        ge=16 * MEBIBYTE,
+        le=256 * MEBIBYTE,
+        description=(
+            "Raw safety limit for one retained NotebookLM chat protocol frame."
+        ),
+    )
+    notebooklm_chat_answer_max_bytes: int = Field(
+        default=4 * MEBIBYTE,
+        ge=64 * 1024,
+        le=16 * MEBIBYTE,
+        description=(
+            "Maximum UTF-8 size of the final prose answer, excluding citations."
+        ),
+    )
+    notebooklm_chat_citation_max_bytes: int = Field(
+        default=64 * MEBIBYTE,
         ge=MEBIBYTE,
-        le=64 * MEBIBYTE,
-        description="Maximum NotebookLM chat response size buffered by the SDK",
+        le=128 * MEBIBYTE,
+        description=(
+            "Maximum total UTF-8 size of retained citation passages, separate "
+            "from the prose answer."
+        ),
+    )
+    notebooklm_chat_wire_max_bytes: int = Field(
+        default=GIBIBYTE,
+        ge=256 * MEBIBYTE,
+        le=2 * GIBIBYTE,
+        description=(
+            "Runaway safety ceiling for all decoded bytes received across one "
+            "NotebookLM chat stream; this is transport traffic, not answer size."
+        ),
     )
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @model_validator(mode="after")
+    def validate_chat_stream_limits(self) -> "Settings":
+        if (
+            self.notebooklm_chat_wire_max_bytes
+            < self.notebooklm_chat_frame_max_bytes
+        ):
+            raise ValueError(
+                "NOTEBOOKLM_CHAT_WIRE_MAX_BYTES must be at least "
+                "NOTEBOOKLM_CHAT_FRAME_MAX_BYTES"
+            )
+        if self.notebooklm_chat_answer_max_bytes > self.notebooklm_chat_frame_max_bytes:
+            raise ValueError(
+                "NOTEBOOKLM_CHAT_ANSWER_MAX_BYTES must not exceed "
+                "NOTEBOOKLM_CHAT_FRAME_MAX_BYTES"
+            )
+        if (
+            self.notebooklm_chat_citation_max_bytes
+            > self.notebooklm_chat_frame_max_bytes
+        ):
+            raise ValueError(
+                "NOTEBOOKLM_CHAT_CITATION_MAX_BYTES must not exceed "
+                "NOTEBOOKLM_CHAT_FRAME_MAX_BYTES"
+            )
+        return self
 
     @property
     def async_database_url(self) -> str:

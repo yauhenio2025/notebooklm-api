@@ -3,7 +3,7 @@ services:
     name: notebooklm-api
     runtime: python
     region: singapore
-    plan: starter
+    plan: standard
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
@@ -22,10 +22,18 @@ services:
         value: /opt/render/project/.notebooklm
       - key: NOTEBOOKLM_QUERY_TIMEOUT_SECONDS
         value: "1200"
-      # Bound the SDK's in-memory chat response buffer. The application accepts
-      # values from 1 MiB through 64 MiB; 32 MiB leaves production headroom.
-      - key: NOTEBOOKLM_CHAT_RESPONSE_MAX_BYTES
-        value: "33554432"
+      # Raw protocol-frame safety limit. Answer and citation limits below are
+      # measured independently; superseded progressive frames are discarded.
+      - key: NOTEBOOKLM_CHAT_FRAME_MAX_BYTES
+        value: "201326592"
+      - key: NOTEBOOKLM_CHAT_ANSWER_MAX_BYTES
+        value: "4194304"
+      - key: NOTEBOOKLM_CHAT_CITATION_MAX_BYTES
+        value: "67108864"
+      # Keep a separate high ceiling against a genuinely runaway stream. These
+      # bytes are monitored transport traffic and are never reported as answer size.
+      - key: NOTEBOOKLM_CHAT_WIRE_MAX_BYTES
+        value: "1073741824"
       # Consumer auth for every research/data/mutation route. This is NOT the
       # Google master token. Generate a strong random value and configure the
       # same value in Ganrl; clients send it as X-API-Key.
