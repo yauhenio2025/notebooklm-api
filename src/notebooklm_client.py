@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 from src.config import get_settings
 
@@ -28,6 +29,36 @@ logger = logging.getLogger(__name__)
 _client = None
 _client_initialized = False
 _init_lock = asyncio.Lock()
+
+
+class _NoRetryChatTransport:
+    """Force the pinned SDK's non-idempotent chat POST to run only once.
+
+    ``notebooklm-py`` exposes retry budgets for rate limits and server errors,
+    but its chat facade does not yet expose the separate
+    ``disable_internal_retries`` switch that also suppresses auth-refresh
+    replay.  The wrapper owns that stricter boundary, so bind it at the one
+    transport seam used by ``ChatAPI.ask`` and fail client initialization if
+    the pinned SDK ever removes or changes the seam.
+    """
+
+    def __init__(self, delegate: object) -> None:
+        if not callable(getattr(delegate, "perform_authed_post", None)):
+            raise RuntimeError("NotebookLM chat transport contract changed")
+        self._delegate = delegate
+
+    async def perform_authed_post(self, **kwargs: Any) -> object:
+        kwargs["disable_internal_retries"] = True
+        return await self._delegate.perform_authed_post(**kwargs)
+
+
+def _disable_chat_internal_retries(client: object) -> None:
+    """Install the fail-closed, at-most-once transport on one SDK client."""
+    chat = getattr(client, "chat", None)
+    transport = getattr(chat, "_transport", None)
+    if chat is None or transport is None:
+        raise RuntimeError("NotebookLM chat transport contract changed")
+    chat._transport = _NoRetryChatTransport(transport)
 
 
 def _profile_paths() -> tuple[Path, Path]:
@@ -113,6 +144,7 @@ async def get_notebooklm_client():
                 rate_limit_max_retries=0,
                 server_error_max_retries=0,
             )
+            _disable_chat_internal_retries(_client)
             # Enter the async context manager to keep the session alive
             await _client.__aenter__()
 
