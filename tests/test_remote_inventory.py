@@ -48,7 +48,9 @@ def _client_for_routes(fake_client: FakeClient) -> TestClient:
 def test_remote_notebooks_are_read_from_provider_objects_not_database_rows():
     provider = FakeCollection(
         [
-            SimpleNamespace(id="nb-1", title="ganrl · project · corpus", status="active"),
+            SimpleNamespace(
+                id="nb-1", title="ganrl · project · corpus", status="active"
+            ),
             SimpleNamespace(id="nb-2", title="Recovery candidate", is_ready=False),
         ]
     )
@@ -108,6 +110,33 @@ def test_remote_sources_preserve_stable_identity_readiness_and_type():
         },
     ]
     assert provider.calls == [("nb-managed",)]
+
+
+def test_remote_source_preserves_terminal_provider_error_instead_of_processing():
+    provider = FakeCollection(
+        [
+            SimpleNamespace(
+                id="source-error-status",
+                title="Failed source",
+                is_ready=False,
+                status=SimpleNamespace(value="error"),
+                kind="text",
+            ),
+            SimpleNamespace(
+                id="source-error-flag",
+                title="Another failed source",
+                is_ready=False,
+                is_error=True,
+                kind="text",
+            ),
+        ]
+    )
+
+    result = asyncio.run(
+        list_actual_remote_sources(FakeClient(sources=provider), "nb-managed")
+    )
+
+    assert [item.status for item in result] == ["error", "error"]
 
 
 def test_remote_inventory_rejects_an_identity_without_a_title():

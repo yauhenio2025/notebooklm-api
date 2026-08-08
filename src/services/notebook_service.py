@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 async def list_notebooks(db: AsyncSession) -> list[Notebook]:
     """List all notebooks from database."""
     result = await db.execute(
-        select(Notebook).where(Notebook.is_active == True).order_by(Notebook.created_at.desc())
+        select(Notebook)
+        .where(Notebook.is_active == True)
+        .order_by(Notebook.created_at.desc())
     )
     return list(result.scalars().all())
 
@@ -37,7 +39,7 @@ async def create_notebook(db: AsyncSession, title: str) -> Notebook:
     if not client:
         raise RuntimeError("NotebookLM client not available - check auth configuration")
 
-    logger.info(f"Creating notebook: {title}")
+    logger.info("Creating notebook title_chars=%s", len(title))
     nb = await client.notebooks.create(title=title)
 
     notebook = Notebook(
@@ -51,7 +53,9 @@ async def create_notebook(db: AsyncSession, title: str) -> Notebook:
     await db.commit()
     await db.refresh(notebook)
 
-    logger.info(f"Notebook created: {notebook.id} - {title}")
+    logger.info(
+        "Notebook created notebook_id=%s title_chars=%s", notebook.id, len(title)
+    )
     return notebook
 
 
@@ -66,8 +70,12 @@ async def delete_notebook(db: AsyncSession, notebook_id: str) -> bool:
         try:
             await client.notebooks.delete(notebook_id)
             logger.info(f"Deleted notebook from NotebookLM: {notebook_id}")
-        except Exception as e:
-            logger.warning(f"Failed to delete from NotebookLM (may already be gone): {e}")
+        except Exception as exc:
+            logger.warning(
+                "Remote notebook deletion failed notebook_id=%s error_type=%s",
+                notebook_id,
+                type(exc).__name__,
+            )
 
     await db.delete(notebook)
     await db.commit()
@@ -111,7 +119,9 @@ async def sync_notebook(db: AsyncSession, notebook_id: str) -> Notebook:
                 id=src_item.id,
                 notebook_id=notebook_id,
                 title=src_item.title or src_item.id,
-                source_type=str(src_item.kind) if hasattr(src_item, "kind") else "unknown",
+                source_type=str(src_item.kind)
+                if hasattr(src_item, "kind")
+                else "unknown",
                 status="ready" if src_item.is_ready else "processing",
             )
             db.add(source)

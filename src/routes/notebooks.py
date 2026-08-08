@@ -36,11 +36,16 @@ async def api_create_notebook(
     try:
         notebook = await create_notebook(db, body.title)
         return notebook
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to create notebook: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create notebook: {e}")
+    except RuntimeError as exc:
+        logger.error("Notebook creation unavailable error_type=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="NotebookLM service is unavailable"
+        ) from None
+    except Exception as exc:
+        logger.error("Notebook creation failed error_type=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500, detail="NotebookLM could not create the notebook"
+        ) from None
 
 
 @router.get("/notebooks/{notebook_id}", response_model=NotebookDetail)
@@ -87,8 +92,13 @@ async def api_sync_notebook(
     try:
         notebook = await sync_notebook(db, notebook_id)
         return notebook
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to sync notebook: {e}")
-        raise HTTPException(status_code=500, detail=f"Sync failed: {e}")
+    except RuntimeError as exc:
+        logger.error("Notebook sync unavailable error_type=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="NotebookLM service is unavailable"
+        ) from None
+    except Exception as exc:
+        logger.error("Notebook sync failed error_type=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500, detail="NotebookLM could not synchronize the notebook"
+        ) from None

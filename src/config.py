@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = Field(
-        default="postgresql+asyncpg://notebook_lm_db_user:2DPQF8i9MA8xuOk5FyEkCkfXnWYTtg5L@dpg-d6ekteruibrs73df6au0-a.singapore-postgres.render.com/notebook_lm_db",
+        default="postgresql://localhost:5432/notebooklm",
         description="PostgreSQL connection string",
     )
 
@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # Zotero
     zotero_api_key: str = Field(
-        default="ZORwvJIL1PLXLteN0heAJrcA",
+        default="",
         description="Zotero API key",
     )
     zotero_group_id: str = Field(

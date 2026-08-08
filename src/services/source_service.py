@@ -5,7 +5,6 @@ import os
 import shutil
 import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,7 +38,11 @@ async def upload_file_source(
     if not client:
         raise RuntimeError("NotebookLM client not available")
 
-    logger.info(f"Uploading source to notebook {notebook_id}: {file_name}")
+    logger.info(
+        "Uploading file source notebook_id=%s filename_chars=%s",
+        notebook_id,
+        len(file_name),
+    )
 
     # Upload to NotebookLM (async) with wait=True to poll for readiness
     src_result = await client.sources.add_file(
@@ -58,8 +61,12 @@ async def upload_file_source(
                 canonical_id = nlm_src.id
                 logger.info(f"Canonical ID resolved: {src_result.id} -> {canonical_id}")
                 break
-    except Exception as e:
-        logger.warning(f"Failed to sync canonical source ID: {e}")
+    except Exception as exc:
+        logger.warning(
+            "Canonical source-ID sync failed notebook_id=%s error_type=%s",
+            notebook_id,
+            type(exc).__name__,
+        )
 
     # Persist to DB with canonical ID
     source = Source(
@@ -76,7 +83,7 @@ async def upload_file_source(
     await db.commit()
     await db.refresh(source)
 
-    logger.info(f"Source persisted: {source.id} - {source.title}")
+    logger.info("Source persisted source_id=%s notebook_id=%s", source.id, notebook_id)
     return source
 
 
@@ -91,7 +98,12 @@ async def upload_text_source(
     if not client:
         raise RuntimeError("NotebookLM client not available")
 
-    logger.info(f"Uploading text source to notebook {notebook_id}: {title}")
+    logger.info(
+        "Uploading text source notebook_id=%s title_chars=%s content_chars=%s",
+        notebook_id,
+        len(title),
+        len(content),
+    )
 
     src_result = await client.sources.add_text(
         notebook_id, title, content, wait=True, wait_timeout=120.0
@@ -109,8 +121,12 @@ async def upload_text_source(
                 canonical_id = nlm_src.id
                 logger.info(f"Canonical ID resolved: {src_result.id} -> {canonical_id}")
                 break
-    except Exception as e:
-        logger.warning(f"Failed to sync canonical source ID: {e}")
+    except Exception as exc:
+        logger.warning(
+            "Canonical text-source ID sync failed notebook_id=%s error_type=%s",
+            notebook_id,
+            type(exc).__name__,
+        )
 
     source = Source(
         id=canonical_id,
@@ -125,7 +141,9 @@ async def upload_text_source(
     await db.commit()
     await db.refresh(source)
 
-    logger.info(f"Text source persisted: {source.id} - {source.title}")
+    logger.info(
+        "Text source persisted source_id=%s notebook_id=%s", source.id, notebook_id
+    )
     return source
 
 
@@ -190,8 +208,12 @@ async def upload_from_zotero(
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 tmp_dir = None
 
-        except Exception as e:
-            logger.error(f"Failed to upload Zotero item {key}: {e}")
+        except Exception as exc:
+            logger.error(
+                "Zotero item upload failed item_key=%s error_type=%s",
+                key,
+                type(exc).__name__,
+            )
             if tmp_dir:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -243,8 +265,10 @@ async def sync_source_ids(db: AsyncSession, notebook_id: str) -> dict:
                     metadata_=db_src.metadata_,
                 )
                 db.add(new_source)
-                updated.append({"old_id": old_id, "new_id": nlm_src.id, "title": db_src.title})
-                logger.info(f"Synced source ID: {old_id} -> {nlm_src.id} ({db_src.title})")
+                updated.append(
+                    {"old_id": old_id, "new_id": nlm_src.id, "title": db_src.title}
+                )
+                logger.info("Synced source ID old_id=%s new_id=%s", old_id, nlm_src.id)
                 break
 
     if updated:
@@ -269,8 +293,12 @@ async def delete_source(db: AsyncSession, notebook_id: str, source_id: str) -> b
     if client:
         try:
             await client.sources.delete(notebook_id, source_id)
-        except Exception as e:
-            logger.warning(f"Failed to delete source from NotebookLM: {e}")
+        except Exception as exc:
+            logger.warning(
+                "Remote source deletion failed source_id=%s error_type=%s",
+                source_id,
+                type(exc).__name__,
+            )
 
     await db.delete(source)
     await db.commit()

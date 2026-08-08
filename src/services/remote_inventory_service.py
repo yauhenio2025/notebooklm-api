@@ -40,12 +40,20 @@ def _label(value: object | None, *, default: str) -> str:
 
 
 def _readiness(item: object, *, default: str) -> str:
+    # ``is_ready`` is false for both work still in progress and terminal
+    # provider failures.  Prefer the provider's explicit state whenever it is
+    # present so consumers do not retry an ERROR source forever.
+    if _field(item, "is_error") is True:
+        return "error"
+    provider_status = _field(item, "status")
+    if provider_status is not None:
+        return _label(provider_status, default=default)
     is_ready = _field(item, "is_ready")
     if is_ready is True:
         return "ready"
     if is_ready is False:
         return "processing"
-    return _label(_field(item, "status"), default=default)
+    return default
 
 
 async def list_actual_remote_notebooks(client: Any) -> list[RemoteNotebookResponse]:

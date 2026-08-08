@@ -11,7 +11,12 @@ from src.database import get_db
 from src.models import Query
 from src.schemas import QueryListItem, QueryRequest, QueryResponse
 from src.services.notebook_service import get_notebook
-from src.services.query_service import ask_question, get_query, list_queries, reenrich_query_citations
+from src.services.query_service import (
+    ask_question,
+    get_query,
+    list_queries,
+    reenrich_query_citations,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,11 +38,25 @@ async def api_query_notebook(
         # Reload with citations
         query = await get_query(db, query.id)
         return query
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        logger.error(f"Query failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Query failed: {e}")
+    except RuntimeError as exc:
+        logger.error(
+            "Notebook query unavailable notebook_id=%s error_type=%s",
+            notebook_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="NotebookLM could not complete the query; its outcome may be ambiguous",
+        ) from None
+    except Exception as exc:
+        logger.error(
+            "Notebook query failed notebook_id=%s error_type=%s",
+            notebook_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=500, detail="NotebookLM could not complete the query"
+        ) from None
 
 
 @router.get("/notebooks/{notebook_id}/queries", response_model=list[QueryListItem])
@@ -103,9 +122,15 @@ async def api_reenrich_citations(
     try:
         result = await reenrich_query_citations(db, query)
         return ReenrichResponse(**result)
-    except Exception as e:
-        logger.error(f"Re-enrichment failed for query {query_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Re-enrichment failed: {e}")
+    except Exception as exc:
+        logger.error(
+            "Citation re-enrichment failed query_id=%s error_type=%s",
+            query_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=500, detail="Citation re-enrichment failed"
+        ) from None
 
 
 @router.delete("/notebooks/{notebook_id}/queries/{query_id}", status_code=204)

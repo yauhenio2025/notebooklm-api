@@ -59,7 +59,7 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 ## Render Deployment
 - Service: `notebooklm-api` (Starter plan, Singapore)
 - Database: `notebook-lm-db` (Render PostgreSQL, Starter, Singapore)
-- DB internal URL: `postgresql://notebook_lm_db_user:...@dpg-d6ekteruibrs73df6au0-a/notebook_lm_db`
+- DB internal URL: supplied through Render's `DATABASE_URL` environment variable; never commit the value
 - Auto-deploy: enabled on `master` branch push
 
 ## Consumer API authentication

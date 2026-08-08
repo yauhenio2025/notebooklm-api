@@ -7,11 +7,11 @@ Uses client.chat.ask() which returns AskResult with:
 - .references (list[ChatReference]): Citation data with:
   - .source_id, .citation_number, .cited_text, .start_char, .end_char
 
-Includes auto-retry with auth refresh for transient failures (stale sessions,
-RPC errors, timeouts).
+Provider submissions are at-most-once.  Once ``chat.ask`` has been invoked, an
+exception is treated as outcome-ambiguous and is never retried automatically.
 """
 
-import asyncio
+import hashlib
 import logging
 from datetime import datetime, timezone
 
@@ -24,21 +24,9 @@ from src.notebooklm_client import get_notebooklm_client
 
 logger = logging.getLogger(__name__)
 
-# Error patterns that indicate auth/session staleness (retryable)
-_RETRYABLE_PATTERNS = [
-    "not available",
-    "no result found for rpc",
-    "chat request timed out",
-    "session",
-    "unauthorized",
-    "unauthenticated",
-]
 
-
-def _is_retryable(error: Exception) -> bool:
-    """Check if an error is likely caused by stale auth/session."""
-    msg = str(error).lower()
-    return any(pat in msg for pat in _RETRYABLE_PATTERNS)
+class QueryOutcomeAmbiguousError(RuntimeError):
+    """A submitted provider query whose outcome cannot be replayed safely."""
 
 
 async def ask_question(
@@ -46,19 +34,21 @@ async def ask_question(
     notebook_id: str,
     question: str,
     conversation_id: str | None = None,
-    max_retries: int = 2,
 ) -> Query:
     """Ask a question to a NotebookLM notebook and persist the response.
 
-    Automatically retries with auth refresh on transient failures (stale sessions,
-    RPC errors, timeouts). Up to max_retries attempts.
+    Client initialization may refresh authentication before submission.  After
+    ``chat.ask`` starts, every failure is potentially post-acceptance and is
+    therefore persisted and surfaced without an internal retry.
     """
     client = await get_notebooklm_client()
     if not client:
         # Try auth refresh before giving up
         client = await _refresh_and_get_client()
         if not client:
-            raise RuntimeError("NotebookLM client not available - check auth configuration")
+            raise RuntimeError(
+                "NotebookLM client not available - check auth configuration"
+            )
 
     # Create pending query
     query = Query(
@@ -71,36 +61,41 @@ async def ask_question(
     db.add(query)
     await db.commit()
     await db.refresh(query)
-    logger.info(f"Query {query.id}: asking '{question[:80]}...'")
-
-    # Attempt with retries on transient failures
-    last_error = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            result = await client.chat.ask(
-                notebook_id,
-                question,
-                conversation_id=conversation_id,
-            )
-            break  # Success
-        except Exception as e:
-            last_error = e
-            if attempt < max_retries and _is_retryable(e):
-                logger.warning(
-                    f"Query {query.id}: attempt {attempt} failed with retryable error: {e}. "
-                    f"Refreshing auth and retrying in 3s..."
-                )
-                client = await _refresh_and_get_client()
-                if not client:
-                    raise RuntimeError(f"Auth refresh failed during query retry: {e}") from e
-                await asyncio.sleep(3)
-            else:
-                raise
-    else:
-        raise last_error  # All retries exhausted
+    question_sha256 = hashlib.sha256(question.encode("utf-8")).hexdigest()
+    logger.info(
+        "Query submitted query_id=%s notebook_id=%s question_chars=%s question_sha256=%s",
+        query.id,
+        notebook_id,
+        len(question),
+        question_sha256,
+    )
 
     try:
+        result = await client.chat.ask(
+            notebook_id,
+            question,
+            conversation_id=conversation_id,
+        )
+    except Exception as exc:
+        logger.error(
+            "Query outcome ambiguous query_id=%s notebook_id=%s error_type=%s",
+            query.id,
+            notebook_id,
+            type(exc).__name__,
+        )
+        query.status = "failed"
+        query.metadata_ = {
+            "error_type": type(exc).__name__,
+            "outcome_ambiguous": True,
+            "retry_safe": False,
+            "question_sha256": question_sha256,
+        }
+        await db.commit()
+        raise QueryOutcomeAmbiguousError(
+            "NotebookLM query outcome is ambiguous; do not retry automatically"
+        ) from None
 
+    try:
         # Extract answer - AskResult has .answer attribute
         query.answer = result.answer
         query.conversation_id = result.conversation_id
@@ -128,6 +123,7 @@ async def ask_question(
             source_ids = {c.source_id for c in citations if c.source_id}
             if source_ids:
                 from src.models import Source
+
                 source_result = await db.execute(
                     select(Source).where(Source.id.in_(source_ids))
                 )
@@ -157,10 +153,19 @@ async def ask_question(
             f"{len(citations)} citations"
         )
 
-    except Exception as e:
-        logger.error(f"Query {query.id}: failed - {e}")
+    except Exception as exc:
+        logger.error(
+            "Query result persistence failed query_id=%s error_type=%s",
+            query.id,
+            type(exc).__name__,
+        )
         query.status = "failed"
-        query.metadata_ = {"error": str(e), "error_type": type(e).__name__}
+        query.metadata_ = {
+            "error_type": type(exc).__name__,
+            "outcome_ambiguous": True,
+            "retry_safe": False,
+            "question_sha256": question_sha256,
+        }
         await db.commit()
         raise
 
@@ -170,9 +175,7 @@ async def ask_question(
 async def get_query(db: AsyncSession, query_id: int) -> Query | None:
     """Get a query with its citations."""
     result = await db.execute(
-        select(Query)
-        .where(Query.id == query_id)
-        .options(selectinload(Query.citations))
+        select(Query).where(Query.id == query_id).options(selectinload(Query.citations))
     )
     return result.scalar_one_or_none()
 
@@ -218,11 +221,14 @@ async def _enrich_citations(
     for source_id, cits in by_source.items():
         try:
             fulltext = await client.sources.get_fulltext(notebook_id, source_id)
-        except Exception as e:
-            logger.warning(f"Failed to get fulltext for source {source_id}: {e}")
+        except Exception as exc:
+            logger.warning(
+                "Citation fulltext enrichment failed source_id=%s error_type=%s",
+                source_id,
+                type(exc).__name__,
+            )
             continue
 
-        ft_content = getattr(fulltext, "content", None) or ""
         ft_title = getattr(fulltext, "title", None)
 
         for cit in cits:
@@ -267,7 +273,7 @@ def _recover_cited_text(
     # Find first sentence start (capital after period/newline)
     first_period = snippet.find(". ")
     if first_period > 0 and first_period < len(snippet) // 3:
-        snippet = snippet[first_period + 2:]
+        snippet = snippet[first_period + 2 :]
 
     # Find last sentence end
     last_period = snippet.rfind(".")
@@ -300,7 +306,9 @@ async def reenrich_query_citations(db: AsyncSession, query: Query) -> dict:
     null_after = sum(1 for c in citations if not c.cited_text)
     recovered = null_before - null_after
 
-    logger.info(f"Re-enrichment done: recovered {recovered}/{null_before} NULL citations")
+    logger.info(
+        f"Re-enrichment done: recovered {recovered}/{null_before} NULL citations"
+    )
 
     return {
         "query_id": query.id,
@@ -317,6 +325,7 @@ async def _refresh_and_get_client():
     """
     try:
         from src.services.auth_service import full_auth_refresh
+
         refresh_result = await full_auth_refresh()
         logger.info(
             f"Auth auto-refresh succeeded "
@@ -325,6 +334,6 @@ async def _refresh_and_get_client():
         )
         client = await get_notebooklm_client()
         return client
-    except Exception as e:
-        logger.error(f"Auth auto-refresh failed: {e}")
+    except Exception as exc:
+        logger.error("Auth auto-refresh failed error_type=%s", type(exc).__name__)
         return None

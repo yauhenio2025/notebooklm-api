@@ -9,7 +9,13 @@ from src.database import get_db
 from src.notebooklm_client import get_notebooklm_client
 from src.schemas import SourceFromText, SourceFromZotero, SourceResponse
 from src.services.notebook_service import get_notebook
-from src.services.source_service import delete_source, list_sources, sync_source_ids, upload_from_zotero, upload_text_source
+from src.services.source_service import (
+    delete_source,
+    list_sources,
+    sync_source_ids,
+    upload_from_zotero,
+    upload_text_source,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,9 +70,9 @@ async def api_upload_from_zotero(
     try:
         sources = await upload_from_zotero(db, notebook_id, item_keys)
         return sources
-    except Exception as e:
-        logger.error(f"Zotero upload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+    except Exception as exc:
+        logger.error("Zotero upload failed error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Source upload failed") from None
 
 
 @router.post(
@@ -91,11 +97,16 @@ async def api_upload_from_text(
     try:
         source = await upload_text_source(db, notebook_id, body.title, body.content)
         return source
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        logger.error(f"Text source upload failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+    except RuntimeError as exc:
+        logger.error("Text source upload unavailable error_type=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="NotebookLM service is unavailable"
+        ) from None
+    except Exception as exc:
+        logger.error("Text source upload failed error_type=%s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500, detail="NotebookLM could not upload the text source"
+        ) from None
 
 
 @router.post("/notebooks/{notebook_id}/sources/sync-ids")
@@ -140,9 +151,15 @@ async def api_get_source_fulltext(
             "content": content,
             "char_count": len(content),
         }
-    except Exception as e:
-        logger.error(f"Failed to get fulltext for source {source_id}: {e}")
-        raise HTTPException(status_code=502, detail=f"Fulltext retrieval failed: {e}")
+    except Exception as exc:
+        logger.error(
+            "Fulltext retrieval failed source_id=%s error_type=%s",
+            source_id,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=502, detail="Fulltext retrieval failed"
+        ) from None
 
 
 @router.delete("/notebooks/{notebook_id}/sources/{source_id}", status_code=204)

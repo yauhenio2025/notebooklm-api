@@ -51,6 +51,15 @@ def test_consumer_auth_accepts_the_configured_key():
     assert result is None
 
 
+def test_tracked_configuration_defaults_contain_no_live_credentials():
+    database_default = Settings.model_fields["database_url"].default
+    zotero_default = Settings.model_fields["zotero_api_key"].default
+
+    assert database_default == "postgresql://localhost:5432/notebooklm"
+    assert "@" not in database_default
+    assert zotero_default == ""
+
+
 def test_http_gate_reads_x_api_key_and_never_has_an_unconfigured_bypass():
     test_app = FastAPI()
     configured = _settings(key="ganrl-consumer-secret")
@@ -62,17 +71,15 @@ def test_http_gate_reads_x_api_key_and_never_has_an_unconfigured_bypass():
 
     client = TestClient(test_app)
     assert client.get("/api/private").status_code == 401
-    assert client.get(
-        "/api/private", headers={"X-API-Key": "wrong"}
-    ).status_code == 401
+    assert client.get("/api/private", headers={"X-API-Key": "wrong"}).status_code == 401
     assert client.get(
         "/api/private", headers={"X-API-Key": "ganrl-consumer-secret"}
     ).json() == {"ok": True}
 
     test_app.dependency_overrides[get_settings] = lambda: _settings()
-    assert client.get(
-        "/api/private", headers={"X-API-Key": "anything"}
-    ).status_code == 503
+    assert (
+        client.get("/api/private", headers={"X-API-Key": "anything"}).status_code == 503
+    )
 
 
 def test_openapi_marks_status_and_every_api_operation_as_secured():
