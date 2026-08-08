@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from src.models import Query
@@ -198,6 +198,8 @@ def test_batch_query_commits_running_before_one_provider_call_then_completes(
         assert query.status == "running"
         assert session.commit_states == [("running",)]
         assert len(chat.calls) == 1
+        assert query.metadata_["batch_position"] == 1
+        assert datetime.fromisoformat(query.metadata_["started_at"]).tzinfo is not None
 
         release.set()
         await task
@@ -359,53 +361,125 @@ def test_batch_query_timeout_is_ambiguous_and_never_retried(monkeypatch, caplog)
     assert question not in caplog.text
 
 
-def test_startup_recovery_distinguishes_submitted_from_unsubmitted_rows(
-    monkeypatch,
+def test_startup_recovery_age_gates_running_and_preserves_other_states(
     caplog,
 ):
-    running = _query(
+    observed_at = datetime.now(timezone.utc)
+    recent_running = _query(
         query_id=7,
         status="running",
-        question="Private interrupted running question",
+        question="Private recent running question",
     )
-    pending = _query(
+    recent_running.metadata_ = {
+        "started_at": (observed_at - timedelta(seconds=30)).isoformat()
+    }
+    overdue_running = _query(
         query_id=8,
+        status="running",
+        question="Private overdue running question",
+    )
+    overdue_running.metadata_ = {
+        "started_at": (observed_at - timedelta(seconds=121)).isoformat()
+    }
+    legacy_overdue = _query(
+        query_id=9,
+        status="running",
+        question="Private legacy running question",
+    )
+    legacy_overdue.metadata_ = {"batch_position": 1}
+    legacy_overdue.asked_at = observed_at - timedelta(seconds=121)
+    pending = _query(
+        query_id=10,
         status="pending",
         question="Private interrupted pending question",
     )
-    completed = _query(query_id=9, status="completed")
+    pending.asked_at = observed_at - timedelta(days=1)
+    completed = _query(query_id=11, status="completed")
     completed.metadata_ = {"preserve": "completed"}
-    failed = _query(query_id=10, status="failed")
+    failed = _query(query_id=12, status="failed")
     failed.metadata_ = {"preserve": "failed"}
-    non_batch_pending = _query(query_id=11, status="pending")
+    non_batch_pending = _query(query_id=13, status="pending")
     non_batch_pending.batch_id = None
     session = ProcessSession(
-        [running, pending, completed, failed, non_batch_pending]
+        [
+            recent_running,
+            overdue_running,
+            legacy_overdue,
+            pending,
+            completed,
+            failed,
+            non_batch_pending,
+        ]
     )
 
-    monkeypatch.setattr(batch_recovery_service, "async_session", lambda: session)
     caplog.set_level(logging.INFO)
 
-    counts = asyncio.run(batch_recovery_service.recover_orphaned_batch_queries())
+    recovered_count = asyncio.run(
+        batch_recovery_service.recover_overdue_running_batch_queries(
+            session,
+            now=observed_at,
+            timeout_seconds=60,
+        )
+    )
 
-    assert counts == (1, 1)
-    assert running.status == "failed"
-    assert running.metadata_ == {
+    assert recovered_count == 2
+    assert recent_running.status == "running"
+    assert overdue_running.status == "failed"
+    assert overdue_running.metadata_ == {
         "error_type": "ProcessInterrupted",
         "outcome_ambiguous": True,
         "retry_safe": False,
     }
-    assert pending.status == "failed"
-    assert pending.metadata_ == {
+    assert legacy_overdue.status == "failed"
+    assert legacy_overdue.metadata_ == {
         "error_type": "ProcessInterrupted",
-        "outcome_ambiguous": False,
-        "retry_safe": True,
+        "outcome_ambiguous": True,
+        "retry_safe": False,
     }
+    assert pending.status == "pending"
     assert completed.status == "completed"
     assert completed.metadata_ == {"preserve": "completed"}
     assert failed.status == "failed"
     assert failed.metadata_ == {"preserve": "failed"}
     assert non_batch_pending.status == "pending"
-    assert "running_count=1 pending_count=1" in caplog.text
-    for query in (running, pending, completed, failed, non_batch_pending):
+    assert "recovered_count=2" in caplog.text
+    for query in (
+        recent_running,
+        overdue_running,
+        legacy_overdue,
+        pending,
+        completed,
+        failed,
+        non_batch_pending,
+    ):
         assert query.question not in caplog.text
+
+
+def test_batch_status_poll_recovers_an_overdue_legacy_running_row(
+    monkeypatch,
+    caplog,
+):
+    question = "Private status-polled orphan"
+    query = _query(query_id=14, status="running", question=question)
+    query.metadata_ = {"batch_position": 1}
+    query.asked_at = datetime.now(timezone.utc) - timedelta(seconds=130)
+    session = ProcessSession([query])
+
+    monkeypatch.setattr(
+        batch_recovery_service,
+        "get_settings",
+        lambda: SimpleNamespace(notebooklm_query_timeout_seconds=60),
+    )
+    caplog.set_level(logging.INFO)
+
+    result = asyncio.run(batch_routes.api_batch_status("batch-1", session))
+
+    assert result.pending == 0
+    assert result.failed == 1
+    assert query.status == "failed"
+    assert query.metadata_ == {
+        "error_type": "ProcessInterrupted",
+        "outcome_ambiguous": True,
+        "retry_safe": False,
+    }
+    assert question not in caplog.text

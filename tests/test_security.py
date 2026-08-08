@@ -96,7 +96,7 @@ def test_startup_runs_batch_recovery_after_database_initialization(monkeypatch):
 
     async def recover():
         events.append("batch_recovered")
-        return (0, 0)
+        return 0
 
     async def close_client():
         events.append("client_closed")

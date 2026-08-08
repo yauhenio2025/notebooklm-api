@@ -20,6 +20,7 @@ from src.schemas import (
     BatchStatus,
     QueryListItem,
 )
+from src.services.batch_recovery_service import recover_overdue_running_batch_queries
 from src.services.notebook_service import get_notebook
 
 logger = logging.getLogger(__name__)
@@ -163,6 +164,7 @@ async def api_batch_status(
     db: AsyncSession = Depends(get_db),
 ):
     """Get the status of a batch query."""
+    await recover_overdue_running_batch_queries(db, batch_id=batch_id)
     result = await db.execute(
         select(Query)
         .where(Query.batch_id == batch_id)
@@ -245,7 +247,10 @@ async def _process_batch(batch_id: str, notebook_id: str, delay_seconds: float):
             query_result = await db.execute(select(Query).where(Query.id == query_id))
             query = query_result.scalar_one()
             query.status = "running"
-            query.metadata_ = {"batch_position": batch_position}
+            query.metadata_ = {
+                "batch_position": batch_position,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            }
             # This durable transition is the at-most-once boundary. A process
             # restart may leave ``running`` outstanding, but it must never
             # automatically replay an outcome-ambiguous provider request.
