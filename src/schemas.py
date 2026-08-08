@@ -4,7 +4,6 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-
 # --- Notebooks ---
 
 class NotebookCreate(BaseModel):
@@ -161,19 +160,21 @@ class AuthRefreshResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str = "ok"
-    version: str = "0.1.0"
+    version: str = "0.2.0"
     database: str = "unknown"
     notebooklm_auth: str = "unknown"
+    consumer_api_auth: str = "unknown"
 
 
 class StatusResponse(BaseModel):
     status: str = "ok"
-    version: str = "0.1.0"
+    version: str = "0.2.0"
     database: str = "unknown"
     database_tables: list[str] = []
     notebooklm_auth: str = "unknown"
     notebooklm_notebooks: int | None = None
     zotero_configured: bool = False
+    consumer_api_auth: str = "unknown"
 
 
 # --- Zotero ---

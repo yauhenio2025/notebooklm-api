@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import Settings, get_settings
 from src.database import get_db
 from src.schemas import AuthRefreshResponse, HealthResponse, StatusResponse
+from src.security import require_consumer_api_key
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -39,7 +40,16 @@ async def health_check(
     db: AsyncSession = Depends(get_db),
 ):
     """Basic health check for Render monitoring."""
-    result = HealthResponse(status="ok", version="0.1.0")
+    result = HealthResponse(status="ok", version="0.2.0")
+
+    settings = get_settings()
+    result.consumer_api_auth = (
+        "configured"
+        if settings.notebooklm_api_key.get_secret_value()
+        else "not_configured"
+    )
+    if result.consumer_api_auth == "not_configured":
+        result.status = "degraded"
 
     # Check database
     try:
@@ -57,13 +67,18 @@ async def health_check(
     return result
 
 
-@router.get("/status", response_model=StatusResponse)
+@router.get(
+    "/status",
+    response_model=StatusResponse,
+    dependencies=[Depends(require_consumer_api_key)],
+)
 async def status(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
     """Detailed status including NotebookLM client state and DB tables."""
-    result = StatusResponse(status="ok", version="0.1.0")
+    result = StatusResponse(status="ok", version="0.2.0")
+    result.consumer_api_auth = "configured"
 
     # Database connectivity and tables
     try:
@@ -108,7 +123,11 @@ async def status(
     return result
 
 
-@router.post("/api/auth/refresh", response_model=AuthRefreshResponse)
+@router.post(
+    "/api/auth/refresh",
+    response_model=AuthRefreshResponse,
+    dependencies=[Depends(require_consumer_api_key)],
+)
 async def refresh_auth():
     """Re-mint NotebookLM cookies from the master token and reset the client.
 

@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security
+- Added fail-closed consumer authentication for every `/api/*` route and the detailed `/status` endpoint. Callers must send `X-API-Key` matching `NOTEBOOKLM_API_KEY`; `/health` remains public for Render monitoring.
+- Consumer-key comparison normalizes both values to fixed-length SHA-256 digests and uses `secrets.compare_digest`.
+- Generated OpenAPI now declares the `NotebookLMConsumerKey` API-key security scheme on every protected operation.
+- Replaced wildcard CORS with an empty-by-default, exact-origin allow-list configured by `CORS_ALLOWED_ORIGINS`; wildcard configuration is rejected.
+- Added regression tests covering fail-closed behavior, correct/wrong/missing keys, complete OpenAPI route coverage, and allowed/denied CORS preflights.
+
+See [`docs/SECURITY.md`](SECURITY.md) for the deployment contract. Google master-token behavior is unchanged and remains separate from consumer authentication.
+
 ### Changed
 - **Auth: droplet → master token (2026-07-11).** Replaced the DigitalOcean droplet SSH/CDP cookie-extraction auth with notebooklm-py master-token headless auth. The durable master token (minted once via `notebooklm login --master-token`) lives in the auth profile dir and re-mints fresh web cookies on demand — expired sessions self-heal in-process, no browser at runtime. On Render the token arrives as a Secret File (`MASTER_TOKEN_FILE=/etc/secrets/master_token.json`) seeded into the writable profile dir (`NOTEBOOKLM_HOME`) at startup. ([src/notebooklm_client.py](src/notebooklm_client.py), [src/services/auth_service.py](src/services/auth_service.py), [src/routes/health.py](src/routes/health.py), [render.yaml](render.yaml))
 - notebooklm-py upgraded from >=0.3.0 to pinned git main `49d129db` (0.8.0a3) with `[headless]` extra — master-token support is unreleased on PyPI ([requirements.txt](requirements.txt))

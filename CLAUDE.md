@@ -29,6 +29,12 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 - On Render: the token is a Secret File (`/etc/secrets/master_token.json`); the app seeds it into the writable profile dir (`NOTEBOOKLM_HOME=/opt/render/project/.notebooklm`) and mints `storage_state.json` at startup (ephemeral disk is fine — every boot re-mints)
 - Singleton NotebookLM client initialized lazily from the profile's storage_state.json (`src/notebooklm_client.py`)
 - SECURITY: the master token is a full-account durable Google credential — never print/log/commit it; rotation = re-mint locally + replace the Render secret file
+- Consumer authentication is separate: every `/api/*` route and `/status`
+  requires `X-API-Key: $NOTEBOOKLM_API_KEY`. Only `/health` is public. If
+  `NOTEBOOKLM_API_KEY` is unset, protected routes fail closed with HTTP 503.
+- Browser CORS is disabled by default. `CORS_ALLOWED_ORIGINS` may contain a
+  comma-separated list of exact trusted origins; wildcard origins are refused.
+  Normal Ganrl server-to-server requests do not need CORS.
 - Single-consumer per Google account: concurrent re-mints from several processes invalidate each other's sessions — keep ONE service instance
 - PostgreSQL stores notebooks, sources, queries, and citations for history/export
 - Zotero integration fetches PDFs and uploads them to NotebookLM notebooks
@@ -47,12 +53,25 @@ This service provides an HTTP API on top of Google's NotebookLM, enabling progra
 - `ZOTERO_API_KEY` - Zotero API key for group library access
 - `ZOTERO_GROUP_ID` - Zotero group library ID (default: 5579237)
 - `ANTHROPIC_API_KEY` - Anthropic API key for Claude-powered intent parsing in /api/build-notebook
+- `NOTEBOOKLM_API_KEY` - Consumer API credential; callers send it in `X-API-Key` (required for all `/api/*` routes and `/status`)
+- `CORS_ALLOWED_ORIGINS` - Optional comma-separated exact browser origins; empty by default
 
 ## Render Deployment
 - Service: `notebooklm-api` (Starter plan, Singapore)
 - Database: `notebook-lm-db` (Render PostgreSQL, Starter, Singapore)
 - DB internal URL: `postgresql://notebook_lm_db_user:...@dpg-d6ekteruibrs73df6au0-a/notebook_lm_db`
 - Auto-deploy: enabled on `master` branch push
+
+## Consumer API authentication
+
+```bash
+curl -H "X-API-Key: $NOTEBOOKLM_API_KEY" \
+  https://notebooklm-api-40ns.onrender.com/api/notebooks
+```
+
+The Google master token must never be sent by a caller. It remains an internal
+service credential used only to authenticate the wrapper to Google NotebookLM.
+See `docs/SECURITY.md` for deployment and verification details.
 
 ## notebooklm-py API Notes
 - All methods are async coroutines (must await)

@@ -4,11 +4,12 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import get_settings
 from src.database import close_db, init_db
+from src.security import require_consumer_api_key
 
 # Configure structured logging
 settings = get_settings()
@@ -42,34 +43,54 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="NotebookLM API",
     description="HTTP API for Google NotebookLM: notebook management, querying with citations, and Zotero integration.",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
-# CORS - allow all origins for now (tighten in production)
+# Browser access is denied unless an explicit origin allow-list is configured.
+# Ganrl's normal server-to-server calls do not require CORS.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.cors_allowed_origins_list,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 
 # Register routes
+from src.routes.batch import router as batch_router
+from src.routes.export import router as export_router
 from src.routes.health import router as health_router
 from src.routes.notebooks import router as notebooks_router
+from src.routes.orchestrator import router as orchestrator_router
 from src.routes.queries import router as queries_router
 from src.routes.sources import router as sources_router
 from src.routes.zotero import router as zotero_router
-from src.routes.batch import router as batch_router
-from src.routes.export import router as export_router
-from src.routes.orchestrator import router as orchestrator_router
 
 app.include_router(health_router, tags=["Health"])
-app.include_router(notebooks_router, prefix="/api", tags=["Notebooks"])
-app.include_router(queries_router, prefix="/api", tags=["Queries"])
-app.include_router(sources_router, prefix="/api", tags=["Sources"])
-app.include_router(zotero_router, prefix="/api", tags=["Zotero"])
-app.include_router(batch_router, prefix="/api", tags=["Batch"])
-app.include_router(export_router, prefix="/api", tags=["Export"])
-app.include_router(orchestrator_router, prefix="/api", tags=["Orchestrator"])
+
+# Every research, data, and mutation route under /api is protected. Keep the
+# dependency at router registration so the policy appears in generated OpenAPI
+# and a newly added endpoint cannot accidentally rely on browser CORS as auth.
+protected = [Depends(require_consumer_api_key)]
+app.include_router(
+    notebooks_router, prefix="/api", tags=["Notebooks"], dependencies=protected
+)
+app.include_router(
+    queries_router, prefix="/api", tags=["Queries"], dependencies=protected
+)
+app.include_router(
+    sources_router, prefix="/api", tags=["Sources"], dependencies=protected
+)
+app.include_router(
+    zotero_router, prefix="/api", tags=["Zotero"], dependencies=protected
+)
+app.include_router(
+    batch_router, prefix="/api", tags=["Batch"], dependencies=protected
+)
+app.include_router(
+    export_router, prefix="/api", tags=["Export"], dependencies=protected
+)
+app.include_router(
+    orchestrator_router, prefix="/api", tags=["Orchestrator"], dependencies=protected
+)

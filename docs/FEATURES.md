@@ -6,7 +6,7 @@
 
 ### Health Check
 - **Status**: Active
-- **Description**: Basic health endpoint for Render monitoring - checks DB connectivity and master-token profile state
+- **Description**: Public basic health endpoint for Render monitoring - checks DB connectivity, master-token profile state, and whether consumer API auth is configured; returns no research data
 - **Entry Points**:
   - `src/routes/health.py:37` - GET /health endpoint
   - `src/routes/health.py:17-34` - _auth_state() profile-state probe
@@ -14,7 +14,7 @@
 
 ### Status Check
 - **Status**: Active
-- **Description**: Detailed status including DB tables, live NotebookLM client probe, Zotero config
+- **Description**: Authenticated (`X-API-Key`) detailed status including DB tables, live NotebookLM client probe, Zotero config
 - **Entry Points**:
   - `src/routes/health.py:60` - GET /status endpoint
 - **Added**: 2026-02-24 | **Modified**: 2026-07-11
@@ -141,6 +141,23 @@
 - **Added**: 2026-02-24
 
 ## Infrastructure
+
+### Consumer API Authentication
+- **Status**: Active
+- **Description**: All `/api/*` research/data/mutation routes and `/status` require the `NOTEBOOKLM_API_KEY` value in `X-API-Key`. Comparison uses fixed-length SHA-256 digests and `secrets.compare_digest`. Missing server configuration fails closed; only `/health` is public. OpenAPI declares the `NotebookLMConsumerKey` header scheme.
+- **Entry Points**:
+  - `src/security.py` - key declaration, constant-time verification, fail-closed dependency
+  - `src/main.py` - protected router registration
+  - `src/routes/health.py` - public health; protected detailed status and auth refresh
+- **Added**: 2026-08-08
+
+### Restricted CORS
+- **Status**: Active
+- **Description**: Browser origins are denied by default. `CORS_ALLOWED_ORIGINS` accepts only an explicit comma-separated allow-list and rejects `*`. Methods and headers are limited to the routes' actual browser contract. Server-to-server clients are unaffected.
+- **Entry Points**:
+  - `src/config.py` - normalized origin allow-list
+  - `src/main.py` - restricted CORS middleware
+- **Added**: 2026-08-08
 
 ### Database (PostgreSQL)
 - **Status**: Active

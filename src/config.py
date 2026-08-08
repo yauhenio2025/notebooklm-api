@@ -1,9 +1,8 @@
 """Application configuration from environment variables."""
 
-import os
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -41,6 +40,20 @@ class Settings(BaseSettings):
         description="Anthropic API key for Claude-powered intent parsing",
     )
 
+    # Consumer auth. This protects the wrapper API and is deliberately
+    # independent from the Google master token above.
+    notebooklm_api_key: SecretStr = Field(
+        default=SecretStr(""),
+        description="Consumer credential required in the X-API-Key header",
+    )
+
+    # Browser access is disabled by default. Configure a comma-separated list
+    # only when a trusted browser origin genuinely needs direct API access.
+    cors_allowed_origins: str = Field(
+        default="",
+        description="Comma-separated browser origins allowed by CORS",
+    )
+
     # App
     debug: bool = Field(default=False)
     log_level: str = Field(default="INFO")
@@ -56,6 +69,21 @@ class Settings(BaseSettings):
         elif url.startswith("postgresql://") and "+asyncpg" not in url:
             url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
         return url
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        """Return a normalized, explicitly bounded CORS allow-list."""
+        origins = [
+            origin.strip().rstrip("/")
+            for origin in self.cors_allowed_origins.split(",")
+            if origin.strip()
+        ]
+        if "*" in origins:
+            raise ValueError(
+                "CORS_ALLOWED_ORIGINS may not contain '*'; "
+                "list trusted origins explicitly"
+            )
+        return list(dict.fromkeys(origins))
 
 
 @lru_cache

@@ -20,6 +20,15 @@ services:
         value: /etc/secrets/master_token.json
       - key: NOTEBOOKLM_HOME
         value: /opt/render/project/.notebooklm
+      # Consumer auth for every research/data/mutation route. This is NOT the
+      # Google master token. Generate a strong random value and configure the
+      # same value in Ganrl; clients send it as X-API-Key.
+      - key: NOTEBOOKLM_API_KEY
+        sync: false
+      # Empty means no browser origins are allowed. Ganrl uses server-to-server
+      # requests and does not need CORS. If enabled, list exact origins only.
+      - key: CORS_ALLOWED_ORIGINS
+        value: ""
       - key: ZOTERO_API_KEY
         sync: false
       - key: ZOTERO_GROUP_ID
