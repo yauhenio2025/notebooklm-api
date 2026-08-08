@@ -104,7 +104,15 @@ async def get_notebooklm_client():
             if master_token_path is not None:
                 await mint_storage_state()
 
-            _client = await NotebookLMClient.from_storage(str(storage_path))
+            # The wrapper owns retry and ambiguity semantics.  In particular,
+            # one claimed batch row must map to at most one underlying chat
+            # POST; hidden SDK retries after a 429 or 5xx would violate that
+            # boundary because either response can arrive after acceptance.
+            _client = await NotebookLMClient.from_storage(
+                str(storage_path),
+                rate_limit_max_retries=0,
+                server_error_max_retries=0,
+            )
             # Enter the async context manager to keep the session alive
             await _client.__aenter__()
 
