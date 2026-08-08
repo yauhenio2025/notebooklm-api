@@ -20,6 +20,7 @@ class RemoteInventoryShapeError(RuntimeError):
 _SOURCE_READINESS_LABELS = {
     SourceStatus.READY: "ready",
     SourceStatus.PROCESSING: "processing",
+    SourceStatus.PREPARING: "processing",
     SourceStatus.ERROR: "error",
 }
 

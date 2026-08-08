@@ -122,6 +122,11 @@ def test_remote_sources_map_pinned_provider_status_enums():
                 title="Processing source",
                 status=SourceStatus.PROCESSING,
             ),
+            Source(
+                id="source-preparing",
+                title="Preparing source",
+                status=SourceStatus.PREPARING,
+            ),
             Source(id="source-error", title="Failed source", status=SourceStatus.ERROR),
         ]
     )
@@ -130,7 +135,12 @@ def test_remote_sources_map_pinned_provider_status_enums():
         list_actual_remote_sources(FakeClient(sources=provider), "nb-managed")
     )
 
-    assert [item.status for item in result] == ["ready", "processing", "error"]
+    assert [item.status for item in result] == [
+        "ready",
+        "processing",
+        "processing",
+        "error",
+    ]
 
 
 def test_remote_source_preserves_terminal_provider_error_instead_of_processing():
