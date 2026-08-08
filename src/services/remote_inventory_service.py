@@ -8,11 +8,20 @@ wrapper process died before committing the corresponding PostgreSQL record.
 from collections.abc import Mapping
 from typing import Any
 
+from notebooklm import SourceStatus
+
 from src.schemas import RemoteNotebookResponse, RemoteSourceResponse
 
 
 class RemoteInventoryShapeError(RuntimeError):
     """The provider returned an object that cannot satisfy the narrow contract."""
+
+
+_SOURCE_READINESS_LABELS = {
+    SourceStatus.READY: "ready",
+    SourceStatus.PROCESSING: "processing",
+    SourceStatus.ERROR: "error",
+}
 
 
 def _field(item: object, name: str) -> object | None:
@@ -43,9 +52,13 @@ def _readiness(item: object, *, default: str) -> str:
     # ``is_ready`` is false for both work still in progress and terminal
     # provider failures.  Prefer the provider's explicit state whenever it is
     # present so consumers do not retry an ERROR source forever.
+    provider_status = _field(item, "status")
+    if isinstance(provider_status, SourceStatus):
+        mapped_status = _SOURCE_READINESS_LABELS.get(provider_status)
+        if mapped_status is not None:
+            return mapped_status
     if _field(item, "is_error") is True:
         return "error"
-    provider_status = _field(item, "status")
     if provider_status is not None:
         return _label(provider_status, default=default)
     is_ready = _field(item, "is_ready")

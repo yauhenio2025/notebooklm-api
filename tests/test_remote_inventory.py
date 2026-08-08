@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from notebooklm import Source, SourceStatus
 
 from src.routes import remote as remote_routes
 from src.services.remote_inventory_service import (
@@ -110,6 +111,26 @@ def test_remote_sources_preserve_stable_identity_readiness_and_type():
         },
     ]
     assert provider.calls == [("nb-managed",)]
+
+
+def test_remote_sources_map_pinned_provider_status_enums():
+    provider = FakeCollection(
+        [
+            Source(id="source-ready", title="Ready source", status=SourceStatus.READY),
+            Source(
+                id="source-processing",
+                title="Processing source",
+                status=SourceStatus.PROCESSING,
+            ),
+            Source(id="source-error", title="Failed source", status=SourceStatus.ERROR),
+        ]
+    )
+
+    result = asyncio.run(
+        list_actual_remote_sources(FakeClient(sources=provider), "nb-managed")
+    )
+
+    assert [item.status for item in result] == ["ready", "processing", "error"]
 
 
 def test_remote_source_preserves_terminal_provider_error_instead_of_processing():
