@@ -5,12 +5,15 @@ crash window in which Google accepted a notebook/source mutation but the
 wrapper process died before committing the corresponding PostgreSQL record.
 """
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
 from notebooklm import SourceStatus
 
 from src.schemas import RemoteNotebookResponse, RemoteSourceResponse
+
+logger = logging.getLogger(__name__)
 
 
 class RemoteInventoryShapeError(RuntimeError):
@@ -73,15 +76,29 @@ def _readiness(item: object, *, default: str) -> str:
 async def list_actual_remote_notebooks(client: Any) -> list[RemoteNotebookResponse]:
     """List notebooks from Google through notebooklm-py, bypassing wrapper DB."""
     remote_items = await client.notebooks.list()
-    return [
-        RemoteNotebookResponse(
-            id=_required_text(item, "id"),
-            title=_required_text(item, "title"),
-            status=_readiness(item, default="available"),
-            type="notebook",
+    responses: list[RemoteNotebookResponse] = []
+    skipped_count = 0
+    for item in remote_items:
+        try:
+            notebook_id = _required_text(item, "id")
+            title = _required_text(item, "title")
+        except RemoteInventoryShapeError:
+            skipped_count += 1
+            continue
+        responses.append(
+            RemoteNotebookResponse(
+                id=notebook_id,
+                title=title,
+                status=_readiness(item, default="available"),
+                type="notebook",
+            )
         )
-        for item in remote_items
-    ]
+    if skipped_count:
+        logger.warning(
+            "Skipped malformed remote notebook records count=%d",
+            skipped_count,
+        )
+    return responses
 
 
 async def list_actual_remote_sources(

@@ -1,6 +1,7 @@
 """Consumer-auth, OpenAPI, and CORS regression tests."""
 
 import asyncio
+import logging
 
 import pytest
 from fastapi import Depends, FastAPI, HTTPException
@@ -8,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
 from src.config import Settings, get_settings
-from src.main import app
+from src.main import SENSITIVE_TRANSPORT_LOGGERS, app, suppress_sensitive_transport_logs
 from src.security import api_keys_match, require_consumer_api_key
 
 
@@ -58,6 +59,18 @@ def test_tracked_configuration_defaults_contain_no_live_credentials():
     assert database_default == "postgresql://localhost:5432/notebooklm"
     assert "@" not in database_default
     assert zotero_default == ""
+
+
+def test_sensitive_transport_request_logging_is_suppressed():
+    for logger_name in SENSITIVE_TRANSPORT_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.INFO)
+
+    suppress_sensitive_transport_logs()
+
+    assert all(
+        logging.getLogger(logger_name).level == logging.WARNING
+        for logger_name in SENSITIVE_TRANSPORT_LOGGERS
+    )
 
 
 def test_http_gate_reads_x_api_key_and_never_has_an_unconfigured_bypass():

@@ -170,10 +170,36 @@ def test_remote_source_preserves_terminal_provider_error_instead_of_processing()
     assert [item.status for item in result] == ["error", "error"]
 
 
-def test_remote_inventory_rejects_an_identity_without_a_title():
-    client = FakeClient(notebooks=FakeCollection([SimpleNamespace(id="nb-1")]))
+def test_remote_notebook_inventory_skips_malformed_rows_without_logging_values(caplog):
+    secret_id = "private-malformed-notebook-id"
+    secret_title = "private-malformed-notebook-title"
+    provider = FakeCollection(
+        [
+            SimpleNamespace(id="nb-1", title="Usable notebook"),
+            SimpleNamespace(id=secret_id),
+            SimpleNamespace(id="", title=secret_title),
+        ]
+    )
+
+    result = asyncio.run(list_actual_remote_notebooks(FakeClient(notebooks=provider)))
+
+    assert [item.id for item in result] == ["nb-1"]
+    assert "Skipped malformed remote notebook records count=2" in caplog.text
+    assert secret_id not in caplog.text
+    assert secret_title not in caplog.text
+
+
+def test_remote_source_inventory_remains_strict_for_malformed_rows():
+    client = FakeClient(
+        sources=FakeCollection(
+            [
+                SimpleNamespace(id="source-valid", title="Usable source", kind="pdf"),
+                SimpleNamespace(id="source-malformed"),
+            ]
+        )
+    )
     with pytest.raises(RemoteInventoryShapeError, match="no usable title"):
-        asyncio.run(list_actual_remote_notebooks(client))
+        asyncio.run(list_actual_remote_sources(client, "nb-managed"))
 
 
 def test_remote_routes_return_narrow_payloads_from_fake_client():

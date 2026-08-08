@@ -20,6 +20,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SENSITIVE_TRANSPORT_LOGGERS = ("httpx", "httpcore")
+
+
+def suppress_sensitive_transport_logs() -> None:
+    """Keep request URLs and authentication parameters out of INFO logs."""
+    for logger_name in SENSITIVE_TRANSPORT_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
+suppress_sensitive_transport_logs()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -28,6 +39,9 @@ async def lifespan(app: FastAPI):
     No auth keepalive loop: notebooklm-py rotates cookies itself, and with a
     master token in the profile an expired session re-mints in-process.
     """
+    # Reassert after the ASGI server and imported providers finish configuring
+    # their own loggers. Request URLs can carry Google authentication values.
+    suppress_sensitive_transport_logs()
     logger.info("Starting NotebookLM API...")
     await init_db()
     logger.info("Database initialized")
