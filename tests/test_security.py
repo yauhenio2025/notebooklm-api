@@ -7,7 +7,10 @@ import pytest
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
+from src import main as app_main
+from src import notebooklm_client
 from src.config import Settings, get_settings
 from src.main import SENSITIVE_TRANSPORT_LOGGERS, app, suppress_sensitive_transport_logs
 from src.security import api_keys_match, require_consumer_api_key
@@ -59,6 +62,64 @@ def test_tracked_configuration_defaults_contain_no_live_credentials():
     assert database_default == "postgresql://localhost:5432/notebooklm"
     assert "@" not in database_default
     assert zotero_default == ""
+
+
+def test_batch_query_timeout_is_environment_configurable_and_bounded(monkeypatch):
+    timeout_field = Settings.model_fields["notebooklm_query_timeout_seconds"]
+    assert timeout_field.default == 1200
+
+    monkeypatch.setenv("NOTEBOOKLM_QUERY_TIMEOUT_SECONDS", "900")
+    assert Settings(_env_file=None).notebooklm_query_timeout_seconds == 900
+
+    for valid_timeout in (60, 3600):
+        assert (
+            Settings(
+                notebooklm_query_timeout_seconds=valid_timeout,
+                _env_file=None,
+            ).notebooklm_query_timeout_seconds
+            == valid_timeout
+        )
+
+    for invalid_timeout in (59, 3601):
+        with pytest.raises(ValidationError):
+            Settings(
+                notebooklm_query_timeout_seconds=invalid_timeout,
+                _env_file=None,
+            )
+
+
+def test_startup_runs_batch_recovery_after_database_initialization(monkeypatch):
+    events: list[str] = []
+
+    async def init_db():
+        events.append("database_initialized")
+
+    async def recover():
+        events.append("batch_recovered")
+        return (0, 0)
+
+    async def close_client():
+        events.append("client_closed")
+
+    async def close_db():
+        events.append("database_closed")
+
+    monkeypatch.setattr(app_main, "init_db", init_db)
+    monkeypatch.setattr(app_main, "recover_orphaned_batch_queries", recover)
+    monkeypatch.setattr(notebooklm_client, "close_client", close_client)
+    monkeypatch.setattr(app_main, "close_db", close_db)
+
+    async def scenario():
+        async with app_main.lifespan(app_main.app):
+            assert events == ["database_initialized", "batch_recovered"]
+
+    asyncio.run(scenario())
+    assert events == [
+        "database_initialized",
+        "batch_recovered",
+        "client_closed",
+        "database_closed",
+    ]
 
 
 def test_sensitive_transport_request_logging_is_suppressed():

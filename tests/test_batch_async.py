@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from src.models import Query
 from src.routes import batch as batch_routes
 from src.schemas import BatchQueryRequest, QueryResponse
+from src.services import batch_recovery_service
 
 
 class ScalarResult:
@@ -315,3 +316,96 @@ def test_pre_submission_client_failure_is_retryable_and_sanitized(monkeypatch, c
     }
     assert question not in caplog.text
     assert client_error not in caplog.text
+
+
+def test_batch_query_timeout_is_ambiguous_and_never_retried(monkeypatch, caplog):
+    question = "Private timed-out question"
+    query = _query(query_id=6, question=question)
+    session = ProcessSession([query])
+
+    class HangingChat:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def ask(self, *_args: object, **_kwargs: object):
+            self.calls += 1
+            await asyncio.Event().wait()
+
+    chat = HangingChat()
+
+    async def get_client():
+        return SimpleNamespace(chat=chat)
+
+    monkeypatch.setattr(batch_routes, "async_session", lambda: session)
+    monkeypatch.setattr(batch_routes, "get_notebooklm_client", get_client)
+    monkeypatch.setattr(
+        batch_routes,
+        "get_settings",
+        lambda: SimpleNamespace(notebooklm_query_timeout_seconds=0.01),
+    )
+    caplog.set_level(logging.INFO)
+
+    asyncio.run(batch_routes._process_batch("batch-1", "nb-1", 0))
+
+    assert chat.calls == 1
+    assert query.status == "failed"
+    assert session.commit_states == [("running",), ("failed",)]
+    assert query.metadata_ == {
+        "error_type": "TimeoutError",
+        "outcome_ambiguous": True,
+        "retry_safe": False,
+        "batch_position": 1,
+    }
+    assert question not in caplog.text
+
+
+def test_startup_recovery_distinguishes_submitted_from_unsubmitted_rows(
+    monkeypatch,
+    caplog,
+):
+    running = _query(
+        query_id=7,
+        status="running",
+        question="Private interrupted running question",
+    )
+    pending = _query(
+        query_id=8,
+        status="pending",
+        question="Private interrupted pending question",
+    )
+    completed = _query(query_id=9, status="completed")
+    completed.metadata_ = {"preserve": "completed"}
+    failed = _query(query_id=10, status="failed")
+    failed.metadata_ = {"preserve": "failed"}
+    non_batch_pending = _query(query_id=11, status="pending")
+    non_batch_pending.batch_id = None
+    session = ProcessSession(
+        [running, pending, completed, failed, non_batch_pending]
+    )
+
+    monkeypatch.setattr(batch_recovery_service, "async_session", lambda: session)
+    caplog.set_level(logging.INFO)
+
+    counts = asyncio.run(batch_recovery_service.recover_orphaned_batch_queries())
+
+    assert counts == (1, 1)
+    assert running.status == "failed"
+    assert running.metadata_ == {
+        "error_type": "ProcessInterrupted",
+        "outcome_ambiguous": True,
+        "retry_safe": False,
+    }
+    assert pending.status == "failed"
+    assert pending.metadata_ == {
+        "error_type": "ProcessInterrupted",
+        "outcome_ambiguous": False,
+        "retry_safe": True,
+    }
+    assert completed.status == "completed"
+    assert completed.metadata_ == {"preserve": "completed"}
+    assert failed.status == "failed"
+    assert failed.metadata_ == {"preserve": "failed"}
+    assert non_batch_pending.status == "pending"
+    assert "running_count=1 pending_count=1" in caplog.text
+    for query in (running, pending, completed, failed, non_batch_pending):
+        assert query.question not in caplog.text

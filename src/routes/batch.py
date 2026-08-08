@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from src.config import get_settings
 from src.database import async_session, get_db
 from src.models import Citation, Query
 from src.notebooklm_client import get_notebooklm_client
@@ -237,6 +238,7 @@ async def _process_batch(batch_id: str, notebook_id: str, delay_seconds: float):
 
         conversation_id = None  # Use same conversation for the batch
         query_ids = [query.id for query in queries]
+        query_timeout_seconds = get_settings().notebooklm_query_timeout_seconds
 
         for i, query_id in enumerate(query_ids):
             batch_position = i + 1
@@ -258,11 +260,12 @@ async def _process_batch(batch_id: str, notebook_id: str, delay_seconds: float):
                 len(query_ids),
             )
             try:
-                ask_result = await client.chat.ask(
-                    notebook_id,
-                    query.question,
-                    conversation_id=conversation_id,
-                )
+                async with asyncio.timeout(query_timeout_seconds):
+                    ask_result = await client.chat.ask(
+                        notebook_id,
+                        query.question,
+                        conversation_id=conversation_id,
+                    )
             except Exception as exc:
                 query.status = "failed"
                 query.metadata_ = _failure_metadata(

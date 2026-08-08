@@ -20,6 +20,8 @@ services:
         value: /etc/secrets/master_token.json
       - key: NOTEBOOKLM_HOME
         value: /opt/render/project/.notebooklm
+      - key: NOTEBOOKLM_QUERY_TIMEOUT_SECONDS
+        value: "1200"
       # Consumer auth for every research/data/mutation route. This is NOT the
       # Google master token. Generate a strong random value and configure the
       # same value in Ganrl; clients send it as X-API-Key.

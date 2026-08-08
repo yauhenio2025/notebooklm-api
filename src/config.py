@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # App
     debug: bool = Field(default=False)
     log_level: str = Field(default="INFO")
+    notebooklm_query_timeout_seconds: int = Field(
+        default=1200,
+        ge=60,
+        le=3600,
+        description="Aggregate timeout for one NotebookLM batch query",
+    )
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
