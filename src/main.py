@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import get_settings
 from src.database import close_db, init_db
+from src.routes.batch import schedule_pending_batch_queries
 from src.security import require_consumer_api_key
 from src.services.batch_recovery_service import recover_orphaned_batch_queries
 
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting NotebookLM API...")
     await init_db()
     await recover_orphaned_batch_queries()
+    await schedule_pending_batch_queries()
     logger.info("Database initialized")
 
     yield

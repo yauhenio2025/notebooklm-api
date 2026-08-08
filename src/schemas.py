@@ -1,6 +1,7 @@
 """Pydantic request/response models."""
 
 from datetime import datetime
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
@@ -127,7 +128,13 @@ class QueryListItem(BaseModel):
 # --- Batch ---
 
 class BatchQueryRequest(BaseModel):
-    questions: list[str] = Field(..., min_length=1)
+    # Ganrl persists one durable remote handle per request.  Accepting more
+    # than one question would make ownership and replay semantics ambiguous.
+    questions: list[Annotated[str, Field(min_length=1, max_length=5000)]] = Field(
+        ...,
+        min_length=1,
+        max_length=1,
+    )
     delay_seconds: float = Field(default=2.0, ge=0, le=30)
 
 

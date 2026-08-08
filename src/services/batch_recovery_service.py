@@ -1,4 +1,4 @@
-"""Age-gated recovery for batch-query rows left by a stopped process."""
+"""Deadline-gated recovery for claimed batch-query rows."""
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.config import get_settings
 from src.database import async_session
 from src.models import Query
 
@@ -29,16 +28,11 @@ def _utc_datetime(value: object) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
-def _query_started_at(query: Query) -> datetime | None:
+def _query_deadline_at(query: Query) -> datetime | None:
     metadata = query.metadata_
     if isinstance(metadata, dict):
-        started_at = _utc_datetime(metadata.get("started_at"))
-        if started_at is not None:
-            return started_at
-    # Rows created before ``started_at`` was persisted fall back to their
-    # durable submission timestamp. This is intentionally conservative for
-    # new multi-question rows, which always carry their actual start time.
-    return _utc_datetime(query.asked_at)
+        return _utc_datetime(metadata.get("deadline_at"))
+    return None
 
 
 async def recover_overdue_running_batch_queries(
@@ -46,13 +40,14 @@ async def recover_overdue_running_batch_queries(
     *,
     batch_id: str | None = None,
     now: datetime | None = None,
-    timeout_seconds: int | None = None,
 ) -> int:
-    """Fail only running rows older than the execution bound plus grace.
+    """Fail only running rows past their persisted deadline plus grace.
 
-    ``running`` is committed immediately before the provider call, so it is
-    outcome-ambiguous once overdue. ``pending`` rows are never touched: their
-    age may reflect a legitimate wait behind earlier questions in the batch.
+    The deadline belongs to the task that atomically claimed the row.  Current
+    configuration and ``asked_at`` are deliberately irrelevant: a rolling
+    deploy must not shorten an in-flight owner's lease, while legacy running
+    rows without a trustworthy deadline remain ambiguous for manual handling.
+    ``pending`` rows are never failed and can be safely scheduled again.
     """
     statement = select(Query).where(
         Query.batch_id.is_not(None),
@@ -64,14 +59,6 @@ async def recover_overdue_running_batch_queries(
     queries = list(result.scalars().all())
 
     observed_at = _utc_datetime(now) or datetime.now(timezone.utc)
-    configured_timeout = (
-        timeout_seconds
-        if timeout_seconds is not None
-        else get_settings().notebooklm_query_timeout_seconds
-    )
-    overdue_after = timedelta(
-        seconds=configured_timeout + QUERY_RECOVERY_GRACE_SECONDS
-    )
     recovered_count = 0
 
     for query in queries:
@@ -79,12 +66,15 @@ async def recover_overdue_running_batch_queries(
             continue
         if batch_id is not None and query.batch_id != batch_id:
             continue
-        started_at = _query_started_at(query)
-        if started_at is None or observed_at - started_at <= overdue_after:
+        deadline_at = _query_deadline_at(query)
+        if deadline_at is None or observed_at <= deadline_at + timedelta(
+            seconds=QUERY_RECOVERY_GRACE_SECONDS
+        ):
             continue
         recovered_count += 1
         query.status = "failed"
         query.metadata_ = {
+            **(query.metadata_ if isinstance(query.metadata_, dict) else {}),
             "error_type": _PROCESS_INTERRUPTED,
             "outcome_ambiguous": True,
             "retry_safe": False,

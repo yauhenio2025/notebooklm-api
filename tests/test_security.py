@@ -98,6 +98,10 @@ def test_startup_runs_batch_recovery_after_database_initialization(monkeypatch):
         events.append("batch_recovered")
         return 0
 
+    async def schedule_pending():
+        events.append("pending_scheduled")
+        return 0
+
     async def close_client():
         events.append("client_closed")
 
@@ -106,17 +110,23 @@ def test_startup_runs_batch_recovery_after_database_initialization(monkeypatch):
 
     monkeypatch.setattr(app_main, "init_db", init_db)
     monkeypatch.setattr(app_main, "recover_orphaned_batch_queries", recover)
+    monkeypatch.setattr(app_main, "schedule_pending_batch_queries", schedule_pending)
     monkeypatch.setattr(notebooklm_client, "close_client", close_client)
     monkeypatch.setattr(app_main, "close_db", close_db)
 
     async def scenario():
         async with app_main.lifespan(app_main.app):
-            assert events == ["database_initialized", "batch_recovered"]
+            assert events == [
+                "database_initialized",
+                "batch_recovered",
+                "pending_scheduled",
+            ]
 
     asyncio.run(scenario())
     assert events == [
         "database_initialized",
         "batch_recovered",
+        "pending_scheduled",
         "client_closed",
         "database_closed",
     ]

@@ -3,10 +3,11 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -26,10 +27,32 @@ from src.services.notebook_service import get_notebook
 logger = logging.getLogger(__name__)
 router = APIRouter()
 _background_tasks: set[asyncio.Task[None]] = set()
+_active_batch_tasks: dict[str, asyncio.Task[None]] = {}
 
 
 class _BatchClientUnavailableError(RuntimeError):
     """The provider client was unavailable before batch submission."""
+
+
+@dataclass(frozen=True)
+class _ClaimedBatchQuery:
+    """One pending row exclusively claimed for a single provider attempt."""
+
+    query_id: int
+    question: str
+    batch_position: int
+    claim_owner: str
+    started_at: datetime
+    deadline_at: datetime
+
+    @property
+    def metadata(self) -> dict[str, object]:
+        return {
+            "batch_position": self.batch_position,
+            "claim_owner": self.claim_owner,
+            "started_at": self.started_at.isoformat(),
+            "deadline_at": self.deadline_at.isoformat(),
+        }
 
 
 def _error_type(exc: BaseException) -> str:
@@ -46,9 +69,11 @@ def _failure_metadata(
     batch_position: int,
     outcome_ambiguous: bool = True,
     retry_safe: bool = False,
+    claim_metadata: dict[str, object] | None = None,
 ) -> dict:
     """Return the only failure facts safe to persist or expose."""
     return {
+        **(claim_metadata or {}),
         "error_type": _error_type(exc),
         "outcome_ambiguous": outcome_ambiguous,
         "retry_safe": retry_safe,
@@ -56,9 +81,11 @@ def _failure_metadata(
     }
 
 
-def _background_task_done(task: asyncio.Task[None]) -> None:
+def _background_task_done(batch_id: str, task: asyncio.Task[None]) -> None:
     """Release a completed task and retrieve failures without leaking details."""
     _background_tasks.discard(task)
+    if _active_batch_tasks.get(batch_id) is task:
+        _active_batch_tasks.pop(batch_id, None)
     if task.cancelled():
         logger.warning("Batch background task cancelled task_name=%s", task.get_name())
         return
@@ -80,14 +107,38 @@ def _start_batch_task(
     notebook_id: str,
     delay_seconds: float,
 ) -> asyncio.Task[None]:
-    """Schedule batch work while retaining a strong process-lifetime reference."""
+    """Schedule at most one local task per batch and retain a strong reference."""
+    active = _active_batch_tasks.get(batch_id)
+    if active is not None and not active.done():
+        return active
     task = asyncio.create_task(
         _process_batch(batch_id, notebook_id, delay_seconds),
         name=f"batch-query-{batch_id}",
     )
     _background_tasks.add(task)
-    task.add_done_callback(_background_task_done)
+    _active_batch_tasks[batch_id] = task
+    task.add_done_callback(lambda completed: _background_task_done(batch_id, completed))
     return task
+
+
+async def schedule_pending_batch_queries() -> int:
+    """Schedule every durable pending batch found during process startup."""
+    async with async_session() as db:
+        result = await db.execute(
+            select(Query.batch_id, Query.notebook_id)
+            .where(Query.batch_id.is_not(None), Query.status == "pending")
+            .distinct()
+        )
+        batches = list(result.all())
+    scheduled = 0
+    for batch_id, notebook_id in batches:
+        if not isinstance(batch_id, str) or not isinstance(notebook_id, str):
+            continue
+        _start_batch_task(batch_id, notebook_id, 0)
+        scheduled += 1
+    if scheduled:
+        logger.info("Scheduled pending batch queries batch_count=%d", scheduled)
+    return scheduled
 
 
 @router.post(
@@ -100,10 +151,9 @@ async def api_batch_query(
     body: BatchQueryRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Submit a batch of questions to a notebook.
+    """Submit exactly one durable question to a notebook.
 
-    Questions are processed sequentially with configurable delay between them.
-    Returns immediately with batch_id and pending query records.
+    Returns immediately with a batch_id and one pending query record.
     """
     notebook = await get_notebook(db, notebook_id)
     if not notebook:
@@ -176,6 +226,13 @@ async def api_batch_status(
     if not queries:
         raise HTTPException(status_code=404, detail="Batch not found")
 
+    pending_query = next(
+        (query for query in queries if query.status == "pending"),
+        None,
+    )
+    if pending_query is not None:
+        _start_batch_task(batch_id, pending_query.notebook_id, 0)
+
     return BatchStatus(
         batch_id=batch_id,
         total=len(queries),
@@ -201,36 +258,151 @@ async def api_batch_status(
     )
 
 
-async def _process_batch(batch_id: str, notebook_id: str, delay_seconds: float):
-    """Background task: process each pending query in the batch sequentially.
+async def _claim_pending_query(
+    db: AsyncSession,
+    *,
+    batch_id: str,
+    notebook_id: str,
+) -> _ClaimedBatchQuery | None:
+    """Atomically move one pending row to an owner-bound running state."""
+    started_at = datetime.now(timezone.utc)
+    deadline_at = started_at + timedelta(
+        seconds=get_settings().notebooklm_query_timeout_seconds
+    )
+    claim_owner = str(uuid.uuid4())
+    # The public contract now permits exactly one row.  The ordered scalar
+    # target also lets a legacy pending batch drain safely one row at a time.
+    target_id = (
+        select(Query.id)
+        .where(
+            Query.batch_id == batch_id,
+            Query.notebook_id == notebook_id,
+            Query.status == "pending",
+        )
+        .order_by(Query.turn_number.asc().nulls_last(), Query.id)
+        .limit(1)
+        .scalar_subquery()
+    )
+    claim_metadata = {
+        "batch_position": 1,
+        "claim_owner": claim_owner,
+        "started_at": started_at.isoformat(),
+        "deadline_at": deadline_at.isoformat(),
+    }
+    result = await db.execute(
+        update(Query)
+        .where(Query.id == target_id, Query.status == "pending")
+        .values(status="running", metadata_=claim_metadata)
+        .returning(Query.id, Query.question, Query.turn_number)
+    )
+    row = result.one_or_none()
+    # End the claiming transaction before any provider call.  A competing
+    # process receives no RETURNING row and therefore has no authority to ask.
+    await db.commit()
+    if row is None:
+        return None
+    position = (
+        row.turn_number
+        if isinstance(row.turn_number, int) and row.turn_number > 0
+        else 1
+    )
+    return _ClaimedBatchQuery(
+        query_id=row.id,
+        question=row.question,
+        batch_position=position,
+        claim_owner=claim_owner,
+        started_at=started_at,
+        deadline_at=deadline_at,
+    )
 
-    Updates existing Query records (created by the endpoint) rather than
-    creating new ones, to avoid duplicates.
-    """
+
+def _owned_running_conditions(claim: _ClaimedBatchQuery) -> tuple[object, ...]:
+    return (
+        Query.id == claim.query_id,
+        Query.status == "running",
+        Query.metadata_["claim_owner"].as_string() == claim.claim_owner,
+    )
+
+
+async def _persist_owned_failure(
+    db: AsyncSession,
+    claim: _ClaimedBatchQuery,
+    exc: BaseException,
+    *,
+    outcome_ambiguous: bool = True,
+    retry_safe: bool = False,
+) -> bool:
+    result = await db.execute(
+        update(Query)
+        .where(*_owned_running_conditions(claim))
+        .values(
+            status="failed",
+            metadata_=_failure_metadata(
+                exc,
+                batch_position=claim.batch_position,
+                outcome_ambiguous=outcome_ambiguous,
+                retry_safe=retry_safe,
+                claim_metadata=claim.metadata,
+            ),
+        )
+        .returning(Query.id)
+    )
+    changed = result.scalar_one_or_none() is not None
+    await db.commit()
+    return changed
+
+
+async def _persist_owned_success(
+    db: AsyncSession,
+    claim: _ClaimedBatchQuery,
+    ask_result: object,
+) -> tuple[bool, int, int]:
+    references = list(ask_result.references)
+    answer = ask_result.answer
+    result = await db.execute(
+        update(Query)
+        .where(*_owned_running_conditions(claim))
+        .values(
+            answer=answer,
+            conversation_id=ask_result.conversation_id,
+            turn_number=ask_result.turn_number,
+            status="completed",
+            answered_at=datetime.now(timezone.utc),
+            metadata_={
+                **claim.metadata,
+                "citation_count": len(references),
+                "answer_length": len(answer),
+            },
+        )
+        .returning(Query.id)
+    )
+    changed = result.scalar_one_or_none() is not None
+    if changed:
+        for ref in references:
+            db.add(
+                Citation(
+                    query_id=claim.query_id,
+                    citation_number=ref.citation_number,
+                    source_id=ref.source_id,
+                    cited_text=ref.cited_text,
+                    start_char=ref.start_char,
+                    end_char=ref.end_char,
+                )
+            )
+    await db.commit()
+    return changed, len(references), len(answer)
+
+
+async def _process_batch(batch_id: str, notebook_id: str, _delay_seconds: float):
+    """Claim and process pending rows without ever replaying a claimed query."""
     logger.info("Batch processing started batch_id=%s", batch_id)
 
     async with async_session() as db:
-        result = await db.execute(
-            select(Query)
-            .where(Query.batch_id == batch_id, Query.status == "pending")
-            .order_by(Query.turn_number)
-        )
-        queries = list(result.scalars().all())
-
         try:
             client = await get_notebooklm_client()
             if client is None:
                 raise _BatchClientUnavailableError
         except Exception as exc:
-            for position, query in enumerate(queries, start=1):
-                query.status = "failed"
-                query.metadata_ = _failure_metadata(
-                    exc,
-                    batch_position=position,
-                    outcome_ambiguous=False,
-                    retry_safe=True,
-                )
-            await db.commit()
             logger.error(
                 "Batch client unavailable batch_id=%s error_type=%s",
                 batch_id,
@@ -238,117 +410,81 @@ async def _process_batch(batch_id: str, notebook_id: str, delay_seconds: float):
             )
             return
 
-        conversation_id = None  # Use same conversation for the batch
-        query_ids = [query.id for query in queries]
-        query_timeout_seconds = get_settings().notebooklm_query_timeout_seconds
-
-        for i, query_id in enumerate(query_ids):
-            batch_position = i + 1
-            query_result = await db.execute(select(Query).where(Query.id == query_id))
-            query = query_result.scalar_one()
-            query.status = "running"
-            query.metadata_ = {
-                "batch_position": batch_position,
-                "started_at": datetime.now(timezone.utc).isoformat(),
-            }
-            # This durable transition is the at-most-once boundary. A process
-            # restart may leave ``running`` outstanding, but it must never
-            # automatically replay an outcome-ambiguous provider request.
-            await db.commit()
-
+        conversation_id = None
+        while True:
+            claim = await _claim_pending_query(
+                db,
+                batch_id=batch_id,
+                notebook_id=notebook_id,
+            )
+            if claim is None:
+                break
             logger.info(
                 "Batch query running batch_id=%s query_id=%s "
-                "batch_position=%d batch_size=%d",
+                "batch_position=%d",
                 batch_id,
-                query_id,
-                batch_position,
-                len(query_ids),
+                claim.query_id,
+                claim.batch_position,
             )
             try:
-                async with asyncio.timeout(query_timeout_seconds):
+                remaining_seconds = max(
+                    0.001,
+                    (claim.deadline_at - datetime.now(timezone.utc)).total_seconds(),
+                )
+                async with asyncio.timeout(remaining_seconds):
                     ask_result = await client.chat.ask(
                         notebook_id,
-                        query.question,
+                        claim.question,
                         conversation_id=conversation_id,
                     )
             except Exception as exc:
-                query.status = "failed"
-                query.metadata_ = _failure_metadata(
-                    exc,
-                    batch_position=batch_position,
-                )
-                await db.commit()
+                await _persist_owned_failure(db, claim, exc)
                 logger.error(
                     "Batch query outcome ambiguous batch_id=%s query_id=%s "
                     "batch_position=%d error_type=%s",
                     batch_id,
-                    query_id,
-                    batch_position,
+                    claim.query_id,
+                    claim.batch_position,
                     _error_type(exc),
                 )
             else:
                 try:
-                    references = list(ask_result.references)
-                    query.answer = ask_result.answer
-                    query.conversation_id = ask_result.conversation_id
-                    query.turn_number = ask_result.turn_number
-                    query.status = "completed"
-                    query.answered_at = datetime.now(timezone.utc)
-
-                    for ref in references:
-                        citation = Citation(
-                            query_id=query_id,
-                            citation_number=ref.citation_number,
-                            source_id=ref.source_id,
-                            cited_text=ref.cited_text,
-                            start_char=ref.start_char,
-                            end_char=ref.end_char,
+                    completed, citation_count, answer_length = (
+                        await _persist_owned_success(
+                            db,
+                            claim,
+                            ask_result,
                         )
-                        db.add(citation)
-
-                    query.metadata_ = {
-                        "citation_count": len(references),
-                        "answer_length": len(ask_result.answer),
-                        "batch_position": batch_position,
-                    }
-
-                    await db.commit()
+                    )
                 except Exception as exc:
-                    # Result persistence can leave the transaction failed.
-                    # Roll back and reload before the best-effort terminal
-                    # status commit; the provider request is never replayed.
                     await db.rollback()
-                    failed_result = await db.execute(
-                        select(Query).where(Query.id == query_id)
-                    )
-                    query = failed_result.scalar_one()
-                    query.status = "failed"
-                    query.metadata_ = _failure_metadata(
-                        exc,
-                        batch_position=batch_position,
-                    )
-                    await db.commit()
+                    await _persist_owned_failure(db, claim, exc)
                     logger.error(
                         "Batch query outcome ambiguous batch_id=%s query_id=%s "
                         "batch_position=%d error_type=%s",
                         batch_id,
-                        query_id,
-                        batch_position,
+                        claim.query_id,
+                        claim.batch_position,
                         _error_type(exc),
                     )
                 else:
+                    if not completed:
+                        logger.warning(
+                            "Batch query ownership changed before persistence "
+                            "batch_id=%s query_id=%s",
+                            batch_id,
+                            claim.query_id,
+                        )
+                        continue
                     conversation_id = ask_result.conversation_id
                     logger.info(
                         "Batch query completed batch_id=%s query_id=%s "
                         "batch_position=%d citation_count=%d answer_length=%d",
                         batch_id,
-                        query_id,
-                        batch_position,
-                        len(references),
-                        len(ask_result.answer),
+                        claim.query_id,
+                        claim.batch_position,
+                        citation_count,
+                        answer_length,
                     )
-
-            if i < len(query_ids) - 1:
-                await asyncio.sleep(delay_seconds)
 
     logger.info("Batch processing complete batch_id=%s", batch_id)
