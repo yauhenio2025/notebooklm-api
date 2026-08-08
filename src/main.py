@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -9,9 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.config import get_settings
 from src.database import close_db, init_db
-from src.routes.batch import schedule_pending_batch_queries
+from src.routes.batch import schedule_pending_batch_queries, shutdown_batch_tasks
 from src.security import require_consumer_api_key
-from src.services.batch_recovery_service import recover_orphaned_batch_queries
+from src.services.batch_recovery_service import (
+    recover_orphaned_batch_queries,
+    run_batch_recovery_supervisor,
+)
 
 # Configure structured logging
 settings = get_settings()
@@ -50,12 +54,26 @@ async def lifespan(app: FastAPI):
     await schedule_pending_batch_queries()
     logger.info("Database initialized")
 
-    yield
+    recovery_stop = asyncio.Event()
+    recovery_task = asyncio.create_task(
+        run_batch_recovery_supervisor(recovery_stop),
+        name="batch-query-recovery-supervisor",
+    )
+    try:
+        yield
+    finally:
+        logger.info("Shutting down NotebookLM API...")
+        # Stop and await the retained supervisor before disposing its database
+        # pool.  Cancellation also interrupts a sweep blocked in database I/O.
+        recovery_stop.set()
+        recovery_task.cancel()
+        await asyncio.gather(recovery_task, return_exceptions=True)
+        await shutdown_batch_tasks()
 
-    logger.info("Shutting down NotebookLM API...")
-    from src.notebooklm_client import close_client
-    await close_client()
-    await close_db()
+        from src.notebooklm_client import close_client
+
+        await close_client()
+        await close_db()
 
 
 app = FastAPI(

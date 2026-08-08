@@ -304,6 +304,15 @@ def test_overdue_recovery_cannot_be_overwritten_by_old_owner(monkeypatch, tmp_pa
             "get_settings",
             lambda: SimpleNamespace(notebooklm_query_timeout_seconds=60),
         )
+        monkeypatch.setattr(
+            batch_routes,
+            "async_session",
+            lambda: AsyncSyncSession(sessions()),
+        )
+        assert await batch_routes._renew_claim_heartbeat(
+            claim,
+            now=claim.deadline_at + timedelta(seconds=30),
+        )
         assert await batch_recovery_service.recover_overdue_running_batch_queries(
             owner_db,
             now=claim.deadline_at + timedelta(seconds=30),
@@ -342,6 +351,184 @@ def test_overdue_recovery_cannot_be_overwritten_by_old_owner(monkeypatch, tmp_pa
         assert query.metadata_["error_type"] == "ProcessInterrupted"
         assert session.scalar(select(func.count(Citation.id))) == 0
     engine.dispose()
+
+
+def test_heartbeat_renewal_requires_the_owned_running_claim(monkeypatch):
+    observed_at = datetime.now(timezone.utc)
+    claim = batch_routes._ClaimedBatchQuery(
+        query_id=20,
+        question="Private heartbeat question",
+        batch_position=1,
+        claim_owner="owned-claim",
+        started_at=observed_at - timedelta(minutes=5),
+        deadline_at=observed_at + timedelta(minutes=5),
+    )
+    query = _query(query_id=20, status="running", question=claim.question)
+    query.metadata_ = claim.metadata
+    session = ProcessSession([query])
+    monkeypatch.setattr(batch_routes, "async_session", lambda: session)
+
+    assert asyncio.run(
+        batch_routes._renew_claim_heartbeat(claim, now=observed_at)
+    )
+    assert query.metadata_["heartbeat_at"] == observed_at.isoformat()
+
+    wrong_owner = batch_routes._ClaimedBatchQuery(
+        query_id=claim.query_id,
+        question=claim.question,
+        batch_position=claim.batch_position,
+        claim_owner="different-owner",
+        started_at=claim.started_at,
+        deadline_at=claim.deadline_at,
+    )
+    assert not asyncio.run(
+        batch_routes._renew_claim_heartbeat(
+            wrong_owner,
+            now=observed_at + timedelta(seconds=1),
+        )
+    )
+    assert query.metadata_["heartbeat_at"] == observed_at.isoformat()
+
+    query.status = "completed"
+    assert not asyncio.run(
+        batch_routes._renew_claim_heartbeat(
+            claim,
+            now=observed_at + timedelta(seconds=2),
+        )
+    )
+    assert query.metadata_["heartbeat_at"] == observed_at.isoformat()
+
+
+def test_renewed_heartbeat_delays_recovery_then_fences_late_owner(monkeypatch):
+    observed_at = datetime.now(timezone.utc)
+    claim = batch_routes._ClaimedBatchQuery(
+        query_id=21,
+        question="Private leased question",
+        batch_position=1,
+        claim_owner="leased-owner",
+        started_at=observed_at - timedelta(minutes=5),
+        deadline_at=observed_at + timedelta(minutes=5),
+    )
+    query = _query(query_id=21, status="running", question=claim.question)
+    query.metadata_ = claim.metadata
+    session = ProcessSession([query])
+    monkeypatch.setattr(batch_routes, "async_session", lambda: session)
+
+    async def scenario():
+        assert await batch_routes._renew_claim_heartbeat(claim, now=observed_at)
+        assert await batch_recovery_service.recover_overdue_running_batch_queries(
+            session,
+            now=observed_at
+            + timedelta(
+                seconds=batch_recovery_service.QUERY_HEARTBEAT_STALE_SECONDS
+            ),
+        ) == 0
+        assert query.status == "running"
+
+        assert await batch_recovery_service.recover_overdue_running_batch_queries(
+            session,
+            now=observed_at
+            + timedelta(
+                seconds=batch_recovery_service.QUERY_HEARTBEAT_STALE_SECONDS + 1
+            ),
+        ) == 1
+        assert query.status == "failed"
+        assert not await batch_routes._renew_claim_heartbeat(
+            claim,
+            now=observed_at + timedelta(minutes=2),
+        )
+
+    asyncio.run(scenario())
+
+
+def test_claim_heartbeat_retries_transient_failure_and_stops_cleanly(
+    monkeypatch,
+    caplog,
+):
+    observed_at = datetime.now(timezone.utc)
+    claim = batch_routes._ClaimedBatchQuery(
+        query_id=22,
+        question="Private retry question",
+        batch_position=1,
+        claim_owner="retry-owner",
+        started_at=observed_at,
+        deadline_at=observed_at + timedelta(minutes=5),
+    )
+    attempts = 0
+    private_error = "private heartbeat database payload"
+
+    async def renew(_claim: batch_routes._ClaimedBatchQuery) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError(private_error)
+        return True
+
+    async def scenario():
+        stop = asyncio.Event()
+        monkeypatch.setattr(batch_routes, "QUERY_HEARTBEAT_INTERVAL_SECONDS", 0.001)
+        monkeypatch.setattr(batch_routes, "_renew_claim_heartbeat", renew)
+        task = asyncio.create_task(batch_routes._run_claim_heartbeat(claim, stop))
+        while attempts < 2:
+            await asyncio.sleep(0.001)
+        stop.set()
+        await task
+        completed_attempts = attempts
+        await asyncio.sleep(0.003)
+        assert attempts == completed_attempts
+
+    caplog.set_level(logging.INFO)
+    asyncio.run(scenario())
+
+    assert attempts >= 2
+    assert "error_type=RuntimeError" in caplog.text
+    assert private_error not in caplog.text
+
+
+def test_terminal_persistence_cancels_heartbeat_blocked_in_database_io(
+    monkeypatch,
+):
+    query = _query(query_id=24, question="Private blocked heartbeat question")
+    session = ProcessSession([query])
+
+    async def scenario():
+        renewal_started = asyncio.Event()
+
+        async def blocked_renewal(_claim: batch_routes._ClaimedBatchQuery) -> bool:
+            renewal_started.set()
+            await asyncio.Event().wait()
+            return True
+
+        class Chat:
+            async def ask(self, *_args: object, **_kwargs: object):
+                await renewal_started.wait()
+                return SimpleNamespace(
+                    answer="Grounded",
+                    conversation_id="conversation-1",
+                    turn_number=1,
+                    references=[],
+                )
+
+        async def get_client():
+            return SimpleNamespace(chat=Chat())
+
+        monkeypatch.setattr(batch_routes, "async_session", lambda: session)
+        monkeypatch.setattr(batch_routes, "get_notebooklm_client", get_client)
+        monkeypatch.setattr(batch_routes, "QUERY_HEARTBEAT_INTERVAL_SECONDS", 0.001)
+        monkeypatch.setattr(
+            batch_routes,
+            "_renew_claim_heartbeat",
+            blocked_renewal,
+        )
+
+        await asyncio.wait_for(
+            batch_routes._process_batch("batch-1", "nb-1", 0),
+            timeout=1,
+        )
+        assert query.status == "completed"
+        assert query.answer == "Grounded"
+
+    asyncio.run(scenario())
 
 
 def test_batch_post_returns_before_background_completion_and_retains_task(
@@ -443,6 +630,51 @@ def test_active_task_registry_suppresses_in_process_scheduling_storm(monkeypatch
     asyncio.run(scenario())
 
 
+def test_shutdown_cancels_and_awaits_batch_tasks_without_replaying_claim(
+    monkeypatch,
+):
+    question = "Private shutdown question"
+    query = _query(query_id=23, question=question)
+    session = ProcessSession([query])
+
+    async def scenario():
+        provider_started = asyncio.Event()
+
+        class HangingChat:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def ask(self, *_args: object, **_kwargs: object):
+                self.calls += 1
+                provider_started.set()
+                await asyncio.Event().wait()
+
+        chat = HangingChat()
+
+        async def get_client():
+            return SimpleNamespace(chat=chat)
+
+        monkeypatch.setattr(batch_routes, "async_session", lambda: session)
+        monkeypatch.setattr(batch_routes, "get_notebooklm_client", get_client)
+
+        task = batch_routes._start_batch_task("batch-1", "nb-1", 0)
+        await asyncio.wait_for(provider_started.wait(), timeout=1)
+        assert query.status == "running"
+        assert chat.calls == 1
+        assert query.metadata_["claim_owner"]
+        assert query.metadata_["heartbeat_at"]
+
+        assert await batch_routes.shutdown_batch_tasks() == 1
+        assert task.done()
+        assert task.cancelled()
+        assert query.status == "running"
+        assert chat.calls == 1
+        assert not batch_routes._background_tasks
+        assert "batch-1" not in batch_routes._active_batch_tasks
+
+    asyncio.run(scenario())
+
+
 def test_batch_query_commits_running_before_one_provider_call_then_completes(
     monkeypatch,
     caplog,
@@ -450,6 +682,7 @@ def test_batch_query_commits_running_before_one_provider_call_then_completes(
     question = "Private completed question"
     query = _query(query_id=1, question=question)
     session = ProcessSession([query])
+    heartbeat_events: list[str] = []
 
     async def scenario():
         started = asyncio.Event()
@@ -483,8 +716,26 @@ def test_batch_query_commits_running_before_one_provider_call_then_completes(
         async def get_client():
             return SimpleNamespace(chat=chat)
 
+        async def observed_heartbeat(
+            _claim: batch_routes._ClaimedBatchQuery,
+            stop: asyncio.Event,
+        ) -> None:
+            heartbeat_events.append("started")
+            try:
+                await stop.wait()
+            finally:
+                heartbeat_events.append("stopped")
+
+        persist_success = batch_routes._persist_owned_success
+
+        async def observed_persist(*args: object, **kwargs: object):
+            heartbeat_events.append("persisted")
+            return await persist_success(*args, **kwargs)
+
         monkeypatch.setattr(batch_routes, "async_session", lambda: session)
         monkeypatch.setattr(batch_routes, "get_notebooklm_client", get_client)
+        monkeypatch.setattr(batch_routes, "_run_claim_heartbeat", observed_heartbeat)
+        monkeypatch.setattr(batch_routes, "_persist_owned_success", observed_persist)
         caplog.set_level(logging.INFO)
 
         task = asyncio.create_task(batch_routes._process_batch("batch-1", "nb-1", 0))
@@ -495,6 +746,7 @@ def test_batch_query_commits_running_before_one_provider_call_then_completes(
         assert len(chat.calls) == 1
         assert query.metadata_["batch_position"] == 1
         assert datetime.fromisoformat(query.metadata_["started_at"]).tzinfo is not None
+        assert datetime.fromisoformat(query.metadata_["heartbeat_at"]).tzinfo is not None
 
         release.set()
         await task
@@ -517,6 +769,10 @@ def test_batch_query_commits_running_before_one_provider_call_then_completes(
         assert datetime.fromisoformat(
             query.metadata_["deadline_at"]
         ) > datetime.fromisoformat(query.metadata_["started_at"])
+        assert datetime.fromisoformat(query.metadata_["heartbeat_at"]) == (
+            query.answered_at
+        )
+        assert heartbeat_events == ["started", "persisted", "stopped"]
 
     asyncio.run(scenario())
     assert question not in caplog.text
@@ -559,6 +815,9 @@ def test_batch_query_failure_is_ambiguous_not_retryable_and_sanitized(
     assert query.metadata_["batch_position"] == 1
     assert "claim_owner" in query.metadata_
     assert "deadline_at" in query.metadata_
+    assert datetime.fromisoformat(query.metadata_["heartbeat_at"]) >= (
+        datetime.fromisoformat(query.metadata_["started_at"])
+    )
     assert query.outcome_ambiguous is True
     assert query.retry_safe is False
     assert query.error_type == "RuntimeError"
@@ -663,7 +922,7 @@ def test_batch_query_timeout_is_ambiguous_and_never_retried(monkeypatch, caplog)
     assert question not in caplog.text
 
 
-def test_recovery_uses_only_persisted_deadlines_and_preserves_legacy_rows(
+def test_recovery_uses_heartbeats_and_legacy_deadlines_conservatively(
     caplog,
 ):
     observed_at = datetime.now(timezone.utc)
@@ -704,6 +963,46 @@ def test_recovery_uses_only_persisted_deadlines_and_preserves_legacy_rows(
         "started_at": (observed_at - timedelta(days=1)).isoformat(),
         "deadline_at": "not-a-date",
     }
+    heartbeat_boundary = _query(
+        query_id=16,
+        status="running",
+        question="Private live heartbeat question",
+    )
+    heartbeat_boundary.metadata_ = {
+        "claim_owner": "live-heartbeat-owner",
+        "heartbeat_at": (
+            observed_at
+            - timedelta(
+                seconds=batch_recovery_service.QUERY_HEARTBEAT_STALE_SECONDS
+            )
+        ).isoformat(),
+        "deadline_at": (observed_at + timedelta(minutes=10)).isoformat(),
+    }
+    stale_heartbeat = _query(
+        query_id=17,
+        status="running",
+        question="Private stale heartbeat question",
+    )
+    stale_heartbeat.metadata_ = {
+        "claim_owner": "stale-heartbeat-owner",
+        "heartbeat_at": (
+            observed_at
+            - timedelta(
+                seconds=batch_recovery_service.QUERY_HEARTBEAT_STALE_SECONDS + 1
+            )
+        ).isoformat(),
+        "deadline_at": (observed_at + timedelta(minutes=10)).isoformat(),
+    }
+    malformed_heartbeat = _query(
+        query_id=18,
+        status="running",
+        question="Private malformed heartbeat question",
+    )
+    malformed_heartbeat.metadata_ = {
+        "claim_owner": "malformed-heartbeat-owner",
+        "heartbeat_at": "not-a-date",
+        "deadline_at": (observed_at + timedelta(minutes=10)).isoformat(),
+    }
     pending = _query(
         query_id=10,
         status="pending",
@@ -722,6 +1021,9 @@ def test_recovery_uses_only_persisted_deadlines_and_preserves_legacy_rows(
             overdue_running,
             legacy_overdue,
             malformed_deadline,
+            heartbeat_boundary,
+            stale_heartbeat,
+            malformed_heartbeat,
             pending,
             completed,
             failed,
@@ -738,7 +1040,7 @@ def test_recovery_uses_only_persisted_deadlines_and_preserves_legacy_rows(
         )
     )
 
-    assert recovered_count == 1
+    assert recovered_count == 2
     assert recent_running.status == "running"
     assert overdue_running.status == "failed"
     assert overdue_running.metadata_["error_type"] == "ProcessInterrupted"
@@ -750,18 +1052,25 @@ def test_recovery_uses_only_persisted_deadlines_and_preserves_legacy_rows(
     assert legacy_overdue.status == "running"
     assert legacy_overdue.metadata_ == {"batch_position": 1}
     assert malformed_deadline.status == "running"
+    assert heartbeat_boundary.status == "running"
+    assert stale_heartbeat.status == "failed"
+    assert stale_heartbeat.metadata_["error_type"] == "ProcessInterrupted"
+    assert malformed_heartbeat.status == "running"
     assert pending.status == "pending"
     assert completed.status == "completed"
     assert completed.metadata_ == {"preserve": "completed"}
     assert failed.status == "failed"
     assert failed.metadata_ == {"preserve": "failed"}
     assert non_batch_pending.status == "pending"
-    assert "recovered_count=1" in caplog.text
+    assert "recovered_count=2" in caplog.text
     for query in (
         recent_running,
         overdue_running,
         legacy_overdue,
         malformed_deadline,
+        heartbeat_boundary,
+        stale_heartbeat,
+        malformed_heartbeat,
         pending,
         completed,
         failed,
@@ -789,3 +1098,38 @@ def test_batch_status_poll_leaves_legacy_running_row_untouched(
     assert query.status == "running"
     assert query.metadata_ == {"batch_position": 1}
     assert question not in caplog.text
+
+
+def test_recovery_supervisor_survives_transient_failure_and_stops(
+    monkeypatch,
+    caplog,
+):
+    attempts = 0
+    private_error = "private recovery database payload"
+    stop = asyncio.Event()
+
+    async def recover():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError(private_error)
+        stop.set()
+        return 0
+
+    async def scenario():
+        monkeypatch.setattr(
+            batch_recovery_service,
+            "recover_orphaned_batch_queries",
+            recover,
+        )
+        await batch_recovery_service.run_batch_recovery_supervisor(
+            stop,
+            interval_seconds=0.001,
+        )
+
+    caplog.set_level(logging.INFO)
+    asyncio.run(scenario())
+
+    assert attempts == 2
+    assert "error_type=RuntimeError" in caplog.text
+    assert private_error not in caplog.text

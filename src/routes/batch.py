@@ -21,7 +21,10 @@ from src.schemas import (
     BatchStatus,
     QueryListItem,
 )
-from src.services.batch_recovery_service import recover_overdue_running_batch_queries
+from src.services.batch_recovery_service import (
+    QUERY_HEARTBEAT_INTERVAL_SECONDS,
+    recover_overdue_running_batch_queries,
+)
 from src.services.notebook_service import get_notebook
 
 logger = logging.getLogger(__name__)
@@ -52,6 +55,7 @@ class _ClaimedBatchQuery:
             "claim_owner": self.claim_owner,
             "started_at": self.started_at.isoformat(),
             "deadline_at": self.deadline_at.isoformat(),
+            "heartbeat_at": self.started_at.isoformat(),
         }
 
 
@@ -121,6 +125,29 @@ def _start_batch_task(
     return task
 
 
+async def shutdown_batch_tasks() -> int:
+    """Cancel and await retained batch work before shared clients are closed.
+
+    Cancellation deliberately leaves an owned row in ``running``.  Its final
+    heartbeat then expires and recovery records an ambiguous interruption;
+    shutdown must never turn a possibly submitted provider request back into
+    replayable pending work.
+    """
+    tasks = tuple(task for task in _background_tasks if not task.done())
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+        # Done callbacks normally maintain both registries.  Clear them
+        # explicitly as well so shutdown does not depend on callback ordering.
+        for task in tasks:
+            _background_tasks.discard(task)
+            for batch_id, active in tuple(_active_batch_tasks.items()):
+                if active is task:
+                    _active_batch_tasks.pop(batch_id, None)
+    return len(tasks)
+
+
 async def schedule_pending_batch_queries() -> int:
     """Schedule every durable pending batch found during process startup."""
     async with async_session() as db:
@@ -149,7 +176,7 @@ async def schedule_pending_batch_queries() -> int:
 async def api_batch_query(
     notebook_id: str,
     body: BatchQueryRequest,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # noqa: B008 - FastAPI dependency injection
 ):
     """Submit exactly one durable question to a notebook.
 
@@ -211,7 +238,7 @@ async def api_batch_query(
 @router.get("/batches/{batch_id}", response_model=BatchStatus)
 async def api_batch_status(
     batch_id: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db),  # noqa: B008 - FastAPI dependency injection
 ):
     """Get the status of a batch query."""
     await recover_overdue_running_batch_queries(db, batch_id=batch_id)
@@ -288,6 +315,7 @@ async def _claim_pending_query(
         "claim_owner": claim_owner,
         "started_at": started_at.isoformat(),
         "deadline_at": deadline_at.isoformat(),
+        "heartbeat_at": started_at.isoformat(),
     }
     result = await db.execute(
         update(Query)
@@ -324,6 +352,79 @@ def _owned_running_conditions(claim: _ClaimedBatchQuery) -> tuple[object, ...]:
     )
 
 
+async def _renew_claim_heartbeat(
+    claim: _ClaimedBatchQuery,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Refresh one claim's heartbeat while its owner still holds the row.
+
+    Heartbeats use their own short transaction because the processing session
+    remains open across the provider request and AsyncSession is not safe for
+    concurrent use.  The row lock serializes renewal with recovery, while the
+    status and owner checks fence a late process after ownership is lost.
+    """
+    async with async_session() as heartbeat_db:
+        result = await heartbeat_db.execute(
+            select(Query).where(*_owned_running_conditions(claim)).with_for_update()
+        )
+        query = result.scalar_one_or_none()
+        metadata = query.metadata_ if query is not None else None
+        if (
+            query is None
+            or query.status != "running"
+            or not isinstance(metadata, dict)
+            or metadata.get("claim_owner") != claim.claim_owner
+        ):
+            return False
+
+        observed_at = now or datetime.now(timezone.utc)
+        query.metadata_ = {
+            **metadata,
+            "heartbeat_at": observed_at.astimezone(timezone.utc).isoformat(),
+        }
+        await heartbeat_db.commit()
+        return True
+
+
+async def _run_claim_heartbeat(
+    claim: _ClaimedBatchQuery,
+    stop: asyncio.Event,
+) -> None:
+    """Renew an owned claim until its provider attempt reaches persistence."""
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(
+                stop.wait(),
+                timeout=QUERY_HEARTBEAT_INTERVAL_SECONDS,
+            )
+            return
+        except TimeoutError:
+            pass
+
+        try:
+            renewed = await _renew_claim_heartbeat(claim)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - heartbeat must survive DB faults
+            # A transient database failure must not cancel a provider request.
+            # If renewal remains impossible, normal lease expiry fences the
+            # eventual late result without replaying the request.
+            logger.warning(
+                "Batch query heartbeat failed query_id=%s error_type=%s",
+                claim.query_id,
+                _error_type(exc),
+            )
+            continue
+
+        if not renewed:
+            logger.warning(
+                "Batch query heartbeat ownership lost query_id=%s",
+                claim.query_id,
+            )
+            return
+
+
 async def _persist_owned_failure(
     db: AsyncSession,
     claim: _ClaimedBatchQuery,
@@ -332,18 +433,21 @@ async def _persist_owned_failure(
     outcome_ambiguous: bool = True,
     retry_safe: bool = False,
 ) -> bool:
+    terminal_at = datetime.now(timezone.utc)
+    failure_metadata = _failure_metadata(
+        exc,
+        batch_position=claim.batch_position,
+        outcome_ambiguous=outcome_ambiguous,
+        retry_safe=retry_safe,
+        claim_metadata=claim.metadata,
+    )
+    failure_metadata["heartbeat_at"] = terminal_at.isoformat()
     result = await db.execute(
         update(Query)
         .where(*_owned_running_conditions(claim))
         .values(
             status="failed",
-            metadata_=_failure_metadata(
-                exc,
-                batch_position=claim.batch_position,
-                outcome_ambiguous=outcome_ambiguous,
-                retry_safe=retry_safe,
-                claim_metadata=claim.metadata,
-            ),
+            metadata_=failure_metadata,
         )
         .returning(Query.id)
     )
@@ -359,6 +463,7 @@ async def _persist_owned_success(
 ) -> tuple[bool, int, int]:
     references = list(ask_result.references)
     answer = ask_result.answer
+    terminal_at = datetime.now(timezone.utc)
     result = await db.execute(
         update(Query)
         .where(*_owned_running_conditions(claim))
@@ -367,9 +472,10 @@ async def _persist_owned_success(
             conversation_id=ask_result.conversation_id,
             turn_number=ask_result.turn_number,
             status="completed",
-            answered_at=datetime.now(timezone.utc),
+            answered_at=terminal_at,
             metadata_={
                 **claim.metadata,
+                "heartbeat_at": terminal_at.isoformat(),
                 "citation_count": len(references),
                 "answer_length": len(answer),
             },
@@ -402,7 +508,7 @@ async def _process_batch(batch_id: str, notebook_id: str, _delay_seconds: float)
             client = await get_notebooklm_client()
             if client is None:
                 raise _BatchClientUnavailableError
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - client boundary is sanitized
             logger.error(
                 "Batch client unavailable batch_id=%s error_type=%s",
                 batch_id,
@@ -426,38 +532,26 @@ async def _process_batch(batch_id: str, notebook_id: str, _delay_seconds: float)
                 claim.query_id,
                 claim.batch_position,
             )
+            heartbeat_stop = asyncio.Event()
+            heartbeat_task = asyncio.create_task(
+                _run_claim_heartbeat(claim, heartbeat_stop),
+                name=f"batch-query-heartbeat-{claim.query_id}",
+            )
             try:
-                remaining_seconds = max(
-                    0.001,
-                    (claim.deadline_at - datetime.now(timezone.utc)).total_seconds(),
-                )
-                async with asyncio.timeout(remaining_seconds):
-                    ask_result = await client.chat.ask(
-                        notebook_id,
-                        claim.question,
-                        conversation_id=conversation_id,
-                    )
-            except Exception as exc:
-                await _persist_owned_failure(db, claim, exc)
-                logger.error(
-                    "Batch query outcome ambiguous batch_id=%s query_id=%s "
-                    "batch_position=%d error_type=%s",
-                    batch_id,
-                    claim.query_id,
-                    claim.batch_position,
-                    _error_type(exc),
-                )
-            else:
                 try:
-                    completed, citation_count, answer_length = (
-                        await _persist_owned_success(
-                            db,
-                            claim,
-                            ask_result,
-                        )
+                    remaining_seconds = max(
+                        0.001,
+                        (
+                            claim.deadline_at - datetime.now(timezone.utc)
+                        ).total_seconds(),
                     )
-                except Exception as exc:
-                    await db.rollback()
+                    async with asyncio.timeout(remaining_seconds):
+                        ask_result = await client.chat.ask(
+                            notebook_id,
+                            claim.question,
+                            conversation_id=conversation_id,
+                        )
+                except Exception as exc:  # noqa: BLE001 - provider outcome is ambiguous
                     await _persist_owned_failure(db, claim, exc)
                     logger.error(
                         "Batch query outcome ambiguous batch_id=%s query_id=%s "
@@ -468,23 +562,50 @@ async def _process_batch(batch_id: str, notebook_id: str, _delay_seconds: float)
                         _error_type(exc),
                     )
                 else:
-                    if not completed:
-                        logger.warning(
-                            "Batch query ownership changed before persistence "
-                            "batch_id=%s query_id=%s",
+                    try:
+                        completed, citation_count, answer_length = (
+                            await _persist_owned_success(
+                                db,
+                                claim,
+                                ask_result,
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001 - persistence must terminate
+                        await db.rollback()
+                        await _persist_owned_failure(db, claim, exc)
+                        logger.error(
+                            "Batch query outcome ambiguous batch_id=%s query_id=%s "
+                            "batch_position=%d error_type=%s",
                             batch_id,
                             claim.query_id,
+                            claim.batch_position,
+                            _error_type(exc),
                         )
-                        continue
-                    conversation_id = ask_result.conversation_id
-                    logger.info(
-                        "Batch query completed batch_id=%s query_id=%s "
-                        "batch_position=%d citation_count=%d answer_length=%d",
-                        batch_id,
-                        claim.query_id,
-                        claim.batch_position,
-                        citation_count,
-                        answer_length,
-                    )
+                    else:
+                        if not completed:
+                            logger.warning(
+                                "Batch query ownership changed before persistence "
+                                "batch_id=%s query_id=%s",
+                                batch_id,
+                                claim.query_id,
+                            )
+                            continue
+                        conversation_id = ask_result.conversation_id
+                        logger.info(
+                            "Batch query completed batch_id=%s query_id=%s "
+                            "batch_position=%d citation_count=%d answer_length=%d",
+                            batch_id,
+                            claim.query_id,
+                            claim.batch_position,
+                            citation_count,
+                            answer_length,
+                        )
+            finally:
+                # Keep the lease live through terminal persistence.  Signaling
+                # handles a sleeping heartbeat; cancellation also interrupts a
+                # renewal already blocked in database I/O.
+                heartbeat_stop.set()
+                heartbeat_task.cancel()
+                await asyncio.gather(heartbeat_task, return_exceptions=True)
 
     logger.info("Batch processing complete batch_id=%s", batch_id)
